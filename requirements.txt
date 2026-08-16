@@ -1,0 +1,8 @@
+av>=14.0.0
+fastapi>=0.116.0,<1.0
+httpx>=0.28.0,<1.0
+pillow>=11.0.0
+pydantic>=2.10.0,<3.0
+python-dotenv>=1.1.0,<2.0
+python-multipart>=0.0.20
+uvicorn[standard]>=0.35.0

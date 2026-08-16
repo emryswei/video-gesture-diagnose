@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SOP Video Analysis</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #17212b;
+      --muted: #667487;
+      --line: #dfe5eb;
+      --surface: #ffffff;
+      --background: #f3f6f8;
+      --blue: #145fd7;
+      --passed: #177245;
+      --passed-bg: #ddf6e8;
+      --failed: #b22d31;
+      --failed-bg: #ffe5e5;
+      --uncertain: #895b00;
+      --uncertain-bg: #fff0c4;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--background); color: var(--ink); }
+    button, input, select { font: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, video:focus-visible { outline: 3px solid #7cb0ff; outline-offset: 2px; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 36px auto 56px; }
+    h1 { margin: 0; font-size: clamp(28px, 5vw, 44px); letter-spacing: -.035em; }
+    h2, h3, p { margin-top: 0; }
+    .muted { color: var(--muted); }
+    .panel { margin-top: 20px; padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 10px 28px #17212b0b; }
+    .upload-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, .55fr) auto; gap: 14px; align-items: end; }
+    .upload-grid > div { min-width: 0; }
+    label { display: block; margin-bottom: 8px; font-weight: 700; }
+    input[type="file"] { width: 100%; min-width: 0; min-height: 48px; padding: 10px; border: 1px dashed #98a6b6; border-radius: 10px; background: #fbfcfd; }
+    select { width: 100%; min-height: 48px; padding: 0 38px 0 12px; border: 1px solid #98a6b6; border-radius: 10px; background: white; color: var(--ink); }
+    .primary { min-height: 48px; padding: 0 21px; border: 0; border-radius: 10px; background: var(--blue); color: white; font-weight: 750; cursor: pointer; }
+    .primary:disabled { cursor: wait; opacity: .55; }
+    .notice { margin: 13px 0 0; font-size: 14px; color: var(--muted); }
+    .error { margin: 14px 0 0; padding: 12px 14px; border-radius: 9px; background: var(--failed-bg); color: var(--failed); white-space: pre-wrap; }
+    .analysis-progress { margin-top: 16px; padding: 16px; border: 1px solid #bdd3f3; border-radius: 12px; background: #f5f9ff; }
+    .progress-heading { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+    .progress-heading strong { color: var(--ink); }
+    .progress-percent { color: var(--blue); font-size: 20px; font-weight: 850; font-variant-numeric: tabular-nums; }
+    .progress-bar { height: 13px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: #dfe9f6; }
+    .progress-fill { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #145fd7, #4c91f1); transition: width .7s ease; }
+    .progress-detail { margin: 10px 0 0; color: var(--muted); font-size: 14px; }
+    .analysis-progress.is-failed { border-color: #f1b8ba; background: var(--failed-bg); }
+    .analysis-progress.is-failed .progress-percent { color: var(--failed); }
+    .analysis-progress.is-failed .progress-fill { background: var(--failed); }
+    [hidden] { display: none !important; }
+    .result-header { display: flex; justify-content: space-between; gap: 18px; align-items: start; }
+    .result-header h2 { margin-bottom: 5px; }
+    .badge { display: inline-flex; gap: 6px; align-items: center; width: fit-content; padding: 6px 10px; border-radius: 999px; font-size: 13px; font-weight: 800; white-space: nowrap; }
+    .passed { color: var(--passed); background: var(--passed-bg); }
+    .failed { color: var(--failed); background: var(--failed-bg); }
+    .uncertain { color: var(--uncertain); background: var(--uncertain-bg); }
+    .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
+    .metric { padding: 15px; border: 1px solid var(--line); border-radius: 11px; background: #fafbfd; color: var(--muted); }
+    .metric strong { display: block; margin-top: 5px; color: var(--ink); font-size: 23px; }
+    .warnings { margin-top: 14px; }
+    .warning { margin: 7px 0 0; padding: 10px 12px; border-left: 4px solid #d39200; background: #fff9e8; color: #684600; }
+    .result-main { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, .85fr); gap: 18px; margin-top: 18px; }
+    .evidence-column { min-width: 0; }
+    video { display: block; width: 100%; max-height: 520px; border-radius: 12px; background: #0e141b; }
+    .timeline { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+    .timeline h3 { margin-bottom: 12px; font-size: 16px; }
+    .track { display: grid; grid-template-columns: 27px 1fr; gap: 8px; align-items: center; margin-top: 7px; }
+    .track-label { color: var(--muted); font-size: 12px; text-align: right; }
+    .track-bar { position: relative; height: 20px; overflow: hidden; border-radius: 5px; background: #eef2f5; }
+    .procedure-range { position: absolute; top: 0; bottom: 0; background: #d9e6f9; }
+    .segment { position: absolute; top: 3px; bottom: 3px; min-width: 3px; padding: 0; border: 0; border-radius: 3px; cursor: pointer; opacity: .88; }
+    .segment.passed { background: var(--passed); }
+    .segment.failed { background: var(--failed); }
+    .segment.uncertain { background: #c38600; }
+    .segment.selected { box-shadow: 0 0 0 3px #17212b; opacity: 1; }
+    .unlocated { position: absolute; inset: 2px 5px; display: grid; place-items: center; border: 1px dashed #c38600; border-radius: 3px; color: var(--uncertain); background: var(--uncertain-bg); font-size: 11px; }
+    .unlocated.failed { border-color: var(--failed); color: var(--failed); background: var(--failed-bg); }
+    .playhead { position: absolute; z-index: 3; top: 0; bottom: 0; width: 2px; background: #111820; pointer-events: none; }
+    .timeline-axis { display: flex; justify-content: space-between; margin: 8px 0 0 35px; color: var(--muted); font-size: 12px; }
+    .selected-evidence { margin-top: 16px; padding: 18px; border: 1px solid var(--line); border-radius: 12px; }
+    .evidence-heading { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .evidence-heading h3 { margin-bottom: 4px; }
+    .step-list { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .step-list-heading { padding: 16px; margin: 0; font-size: 17px; }
+    .step-row { display: grid; grid-template-columns: 30px 1fr auto; gap: 10px; width: 100%; padding: 14px 15px; border: 0; border-top: 1px solid var(--line); background: white; color: inherit; text-align: left; cursor: pointer; }
+    .step-row:hover { background: #f7f9fb; }
+    .step-row[aria-pressed="true"] { background: #edf4ff; box-shadow: inset 4px 0 var(--blue); }
+    .step-number { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: #e9eef3; font-weight: 800; }
+    .step-copy strong, .step-copy span { display: block; }
+    .step-copy span { margin-top: 4px; color: var(--muted); font-size: 13px; }
+    .step-status { align-self: center; }
+    @media (max-width: 760px) {
+      main { width: min(100% - 20px, 680px); margin-top: 20px; }
+      .panel { padding: 16px; }
+      .upload-grid, .result-main, .summary-grid { grid-template-columns: 1fr; }
+      .primary { width: 100%; }
+      .result-header { align-items: stretch; flex-direction: column; }
+      .step-list { margin-top: 0; }
+      .step-row { grid-template-columns: 30px 1fr; }
+      .step-status { grid-column: 2; justify-self: start; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>SOP Video Analysis</h1>
+      <p class="muted">Audit a short video against the WHO alcohol-based handrub procedure.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="upload-title">
+      <h2 id="upload-title">Upload procedure video</h2>
+      <form id="upload-form">
+        <div class="upload-grid">
+          <div>
+            <label for="video-file">Video file</label>
+            <input id="video-file" name="video" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo" required>
+          </div>
+          <div>
+            <label for="model-select">AI model</label>
+            <select id="model-select" name="model_name" required disabled>
+              <option value="">Loading local models…</option>
+            </select>
+          </div>
+          <button id="submit-button" class="primary" type="submit" disabled>Analyze video</button>
+        </div>
+      </form>
+      <p class="notice">Use a clear 15–60 second video. Sampled frames are sent to the configured model service; the full source video is not sent to that service.</p>
+      <div id="progress" class="analysis-progress" role="status" aria-live="polite" hidden>
+        <div class="progress-heading">
+          <strong id="progress-stage">Preparing analysis…</strong>
+          <span id="progress-percent" class="progress-percent">0%</span>
+        </div>
+        <div id="progress-bar" class="progress-bar" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <p id="progress-detail" class="progress-detail">Please keep this page open.</p>
+      </div>
+      <p id="error" class="error" role="alert" hidden></p>
+    </section>
+
+    <section id="results" class="panel" aria-labelledby="result-title" hidden>
+      <div class="result-header">
+        <div>
+          <h2 id="result-title">WHO Hand-rub Analysis</h2>
+          <p id="file-summary" class="muted"></p>
+        </div>
+        <span id="overall-status" class="badge"></span>
+      </div>
+      <div class="summary-grid">
+        <div class="metric">Steps passed<strong id="passed-metric"></strong></div>
+        <div class="metric">Procedure duration<strong id="duration-metric"></strong></div>
+        <div class="metric">Review needed<strong id="review-metric"></strong></div>
+      </div>
+      <p id="analysis-summary" style="margin-top: 16px"></p>
+      <div id="warnings" class="warnings"></div>
+
+      <div class="result-main">
+        <div class="evidence-column">
+          <video id="analysis-video" controls preload="metadata"></video>
+          <div class="timeline" aria-label="Step timeline">
+            <h3>Step timeline</h3>
+            <div id="timeline-tracks"></div>
+            <div class="timeline-axis"><span>0s</span><span id="timeline-end"></span></div>
+          </div>
+          <div id="selected-evidence" class="selected-evidence" aria-live="polite"></div>
+        </div>
+        <aside class="step-list" aria-labelledby="steps-title">
+          <h3 id="steps-title" class="step-list-heading">Step results</h3>
+          <div id="step-rows"></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.querySelector('#upload-form');
+    const fileInput = document.querySelector('#video-file');
+    const modelSelect = document.querySelector('#model-select');
+    const submitButton = document.querySelector('#submit-button');
+    const progress = document.querySelector('#progress');
+    const progressStage = document.querySelector('#progress-stage');
+    const progressPercent = document.querySelector('#progress-percent');
+    const progressBar = document.querySelector('#progress-bar');
+    const progressFill = document.querySelector('#progress-fill');
+    const progressDetail = document.querySelector('#progress-detail');
+    const errorBox = document.querySelector('#error');
+    const results = document.querySelector('#results');
+    const video = document.querySelector('#analysis-video');
+    let sourceUrl = null;
+    let selectedFile = null;
+    let analysisResult = null;
+    let selectedStepId = null;
+    let selectedModelLabel = '';
+    let displayedProgress = 0;
+
+    const STATUS = {
+      passed: { symbol: '✓', label: 'Passed' },
+      failed: { symbol: '×', label: 'Failed' },
+      uncertain: { symbol: '△', label: 'Needs review' }
+    };
+
+    function setText(selector, value) {
+      document.querySelector(selector).textContent = value;
+    }
+
+    function releaseSourceUrl() {
+      if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+      sourceUrl = null;
+    }
+
+    fileInput.addEventListener('change', () => {
+      selectedFile = fileInput.files[0] ?? null;
+      releaseSourceUrl();
+      results.hidden = true;
+      if (selectedFile) {
+        sourceUrl = URL.createObjectURL(selectedFile);
+        video.src = sourceUrl;
+      } else {
+        video.removeAttribute('src');
+      }
+    });
+
+    window.addEventListener('beforeunload', releaseSourceUrl);
+
+    async function loadModels() {
+      try {
+        const response = await fetch('/api/models');
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || 'Could not load local models.');
+        if (!payload.length) throw new Error('No supported Qwen3-VL models are installed.');
+        modelSelect.replaceChildren(...payload.map(model => {
+          const option = document.createElement('option');
+          option.value = model.id;
+          option.textContent = model.label;
+          option.selected = model.is_default;
+          return option;
+        }));
+        if (!modelSelect.value) modelSelect.selectedIndex = 0;
+        modelSelect.disabled = false;
+        submitButton.disabled = false;
+      } catch (error) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'Local model service unavailable';
+        modelSelect.replaceChildren(option);
+        modelSelect.disabled = true;
+        submitButton.disabled = true;
+      }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!selectedFile || !modelSelect.value) return;
+      submitButton.disabled = true;
+      errorBox.hidden = true;
+      results.hidden = true;
+      displayedProgress = 0;
+      progressFill.style.width = '0%';
+      showProgress(0, 'Uploading video…', false);
+      try {
+        const body = new FormData();
+        body.append('video', selectedFile);
+        body.append('sop_id', 'who_handrub');
+        body.append('model_name', modelSelect.value);
+        selectedModelLabel = modelSelect.options[modelSelect.selectedIndex].text;
+        const response = await fetch('/api/analyses', { method: 'POST', body });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || 'The analysis could not be created.');
+        showProgress(
+          payload.progress_percent ?? 5,
+          payload.progress_message || 'Video uploaded; waiting to start analysis.',
+          payload.progress_is_estimated
+        );
+        await pollAnalysis(payload.analysis_id);
+      } catch (error) {
+        showError(error.message);
+        submitButton.disabled = !modelSelect.value;
+      }
+    });
+
+    async function pollAnalysis(analysisId) {
+      while (true) {
+        const response = await fetch(`/api/analyses/${encodeURIComponent(analysisId)}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || 'The analysis is no longer available.');
+        if (payload.status === 'queued') {
+          showProgress(payload.progress_percent, payload.progress_message, payload.progress_is_estimated);
+        } else if (payload.status === 'analyzing') {
+          showProgress(payload.progress_percent, payload.progress_message, payload.progress_is_estimated);
+        } else if (payload.status === 'failed') {
+          throw new Error(payload.error || 'Analysis failed. Please try again.');
+        } else if (payload.status === 'succeeded') {
+          showProgress(100, payload.progress_message || 'Analysis complete.', false);
+          await new Promise(resolve => setTimeout(resolve, 650));
+          analysisResult = payload.result;
+          renderResult(analysisResult);
+          progress.hidden = true;
+          submitButton.disabled = !modelSelect.value;
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    }
+
+    function showProgress(percent, message, isEstimated = false) {
+      const normalized = Math.max(displayedProgress, Math.min(Math.round(percent ?? 0), 100));
+      displayedProgress = normalized;
+      progress.classList.remove('is-failed');
+      progressStage.textContent = message || 'Analyzing video…';
+      progressPercent.textContent = `${normalized}%`;
+      progressFill.style.width = `${normalized}%`;
+      progressBar.setAttribute('aria-valuenow', String(normalized));
+      progressDetail.textContent = isEstimated
+        ? 'Estimated progress based on local model processing time.'
+        : normalized === 100
+          ? 'The evidence report is ready.'
+          : 'Please keep this page open while the analysis runs.';
+      progress.hidden = false;
+    }
+
+    function showError(message) {
+      progress.classList.add('is-failed');
+      progressStage.textContent = 'Analysis failed';
+      progressDetail.textContent = 'The task stopped before completion.';
+      progress.hidden = false;
+      errorBox.textContent = `${message} Verify the video and model service, then try again.`;
+      errorBox.hidden = false;
+      displayedProgress = 0;
+    }
+
+    function statusBadge(status) {
+      const value = STATUS[status] ?? STATUS.uncertain;
+      const span = document.createElement('span');
+      span.className = `badge ${status}`;
+      span.textContent = `${value.symbol} ${value.label}`;
+      return span;
+    }
+
+    function renderResult(result) {
+      const steps = [...result.steps].sort((a, b) => a.step_order - b.step_order);
+      const passed = steps.filter(step => step.status === 'passed').length;
+      const review = steps.filter(step => step.status !== 'passed').length;
+      const overall = document.querySelector('#overall-status');
+      const overallValue = STATUS[result.overall_status] ?? STATUS.uncertain;
+      overall.className = `badge ${result.overall_status}`;
+      overall.textContent = `${overallValue.symbol} ${overallValue.label}`;
+      setText('#file-summary', `${selectedFile.name} · ${result.source_video_duration_sec.toFixed(1)} seconds · ${selectedModelLabel}`);
+      setText('#passed-metric', `${passed} / ${steps.length}`);
+      setText('#duration-metric', result.procedure_duration_sec == null
+        ? 'Not established'
+        : `${result.procedure_duration_sec.toFixed(1)} s ${result.duration_compliant ? '✓' : '×'}`);
+      setText('#review-metric', `${review} ${review === 1 ? 'step' : 'steps'}`);
+      setText('#analysis-summary', result.summary);
+      renderWarnings(result.warnings);
+      selectedStepId = (steps.find(step => step.status === 'failed')
+        ?? steps.find(step => step.status === 'uncertain')
+        ?? steps[0])?.step_id ?? null;
+      renderStepRows(steps);
+      renderTimeline(steps, result);
+      renderSelectedStep(steps.find(step => step.step_id === selectedStepId));
+      results.hidden = false;
+      results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function renderWarnings(warnings) {
+      const host = document.querySelector('#warnings');
+      host.replaceChildren(...warnings.map(message => {
+        const item = document.createElement('p');
+        item.className = 'warning';
+        item.textContent = `Warning: ${message}`;
+        return item;
+      }));
+    }
+
+    function selectStep(step) {
+      selectedStepId = step.step_id;
+      if (step.start_sec != null) video.currentTime = step.start_sec;
+      renderStepRows([...analysisResult.steps].sort((a, b) => a.step_order - b.step_order));
+      renderTimeline(analysisResult.steps, analysisResult);
+      renderSelectedStep(step);
+    }
+
+    function renderStepRows(steps) {
+      const host = document.querySelector('#step-rows');
+      host.replaceChildren(...steps.map(step => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'step-row';
+        button.setAttribute('aria-pressed', String(step.step_id === selectedStepId));
+        const number = document.createElement('span');
+        number.className = 'step-number';
+        number.textContent = step.step_order;
+        const copy = document.createElement('span');
+        copy.className = 'step-copy';
+        const title = document.createElement('strong');
+        title.textContent = step.step_label;
+        const time = document.createElement('span');
+        time.textContent = step.start_sec == null ? 'Not located' : `${step.start_sec.toFixed(1)}–${step.end_sec.toFixed(1)}s`;
+        copy.append(title, time);
+        const badge = statusBadge(step.status);
+        badge.classList.add('step-status');
+        button.append(number, copy, badge);
+        button.addEventListener('click', () => selectStep(step));
+        return button;
+      }));
+    }
+
+    function renderTimeline(steps, result) {
+      const duration = result.source_video_duration_sec;
+      const host = document.querySelector('#timeline-tracks');
+      host.replaceChildren(...[...steps].sort((a, b) => a.step_order - b.step_order).map(step => {
+        const row = document.createElement('div');
+        row.className = 'track';
+        const label = document.createElement('span');
+        label.className = 'track-label';
+        label.textContent = step.step_order;
+        const bar = document.createElement('div');
+        bar.className = 'track-bar';
+        if (result.procedure_start_sec != null && result.procedure_end_sec != null) {
+          const range = document.createElement('span');
+          range.className = 'procedure-range';
+          range.style.left = `${result.procedure_start_sec / duration * 100}%`;
+          range.style.width = `${Math.max((result.procedure_end_sec - result.procedure_start_sec) / duration * 100, 1)}%`;
+          bar.append(range);
+        }
+        if (step.start_sec != null && step.end_sec != null) {
+          const segment = document.createElement('button');
+          segment.type = 'button';
+          segment.className = `segment ${step.status}${step.step_id === selectedStepId ? ' selected' : ''}`;
+          segment.style.left = `${step.start_sec / duration * 100}%`;
+          segment.style.width = `${Math.max((step.end_sec - step.start_sec) / duration * 100, 1)}%`;
+          segment.setAttribute('aria-label', `Step ${step.step_order}, ${step.step_label}, ${STATUS[step.status].label}`);
+          segment.addEventListener('click', () => selectStep(step));
+          bar.append(segment);
+        } else {
+          const unlocated = document.createElement('span');
+          unlocated.className = `unlocated ${step.status}`;
+          unlocated.textContent = `${STATUS[step.status].label} · Not located`;
+          unlocated.setAttribute('aria-label', `Step ${step.step_order}, ${step.step_label}, ${STATUS[step.status].label}, not located`);
+          bar.append(unlocated);
+        }
+        const playhead = document.createElement('span');
+        playhead.className = 'playhead';
+        playhead.style.left = `${Math.min(video.currentTime / duration * 100, 100)}%`;
+        bar.append(playhead);
+        row.append(label, bar);
+        return row;
+      }));
+      setText('#timeline-end', `${duration.toFixed(1)}s`);
+    }
+
+    video.addEventListener('timeupdate', () => {
+      if (!analysisResult) return;
+      const percent = Math.min(video.currentTime / analysisResult.source_video_duration_sec * 100, 100);
+      document.querySelectorAll('.playhead').forEach(item => { item.style.left = `${percent}%`; });
+    });
+
+    function renderSelectedStep(step) {
+      const host = document.querySelector('#selected-evidence');
+      if (!step) {
+        host.textContent = 'No step evidence is available.';
+        return;
+      }
+      const heading = document.createElement('div');
+      heading.className = 'evidence-heading';
+      const copy = document.createElement('div');
+      const title = document.createElement('h3');
+      title.textContent = `Step ${step.step_order} · ${step.step_label}`;
+      const time = document.createElement('p');
+      time.className = 'muted';
+      time.textContent = step.start_sec == null ? 'Not located' : `${step.start_sec.toFixed(1)}–${step.end_sec.toFixed(1)} seconds`;
+      copy.append(title, time);
+      heading.append(copy, statusBadge(step.status));
+      const observation = document.createElement('p');
+      observation.textContent = step.observation;
+      const confidence = document.createElement('p');
+      confidence.className = 'muted';
+      confidence.textContent = `Model confidence: ${Math.round(step.confidence * 100)}%`;
+      host.replaceChildren(heading, observation, confidence);
+    }
+
+    loadModels();
+  </script>
+</body>
+</html>

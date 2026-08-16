@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.diagnostics/
+.venv/
+.env
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.avi
