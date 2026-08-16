@@ -40,8 +40,10 @@
     .notice { margin: 13px 0 0; font-size: 14px; color: var(--muted); }
     .error { margin: 14px 0 0; padding: 12px 14px; border-radius: 9px; background: var(--failed-bg); color: var(--failed); white-space: pre-wrap; }
     .analysis-progress { margin-top: 16px; padding: 16px; border: 1px solid #bdd3f3; border-radius: 12px; background: #f5f9ff; }
-    .progress-heading { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+    .progress-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
     .progress-heading strong { color: var(--ink); }
+    .progress-indicators { display: flex; gap: 10px; align-items: center; white-space: nowrap; }
+    .analysis-timer { padding: 5px 9px; border: 1px solid #bdd3f3; border-radius: 999px; background: white; color: var(--muted); font-size: 13px; font-weight: 750; font-variant-numeric: tabular-nums; }
     .progress-percent { color: var(--blue); font-size: 20px; font-weight: 850; font-variant-numeric: tabular-nums; }
     .progress-bar { height: 13px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: #dfe9f6; }
     .progress-fill {
@@ -74,7 +76,7 @@
     .passed { color: var(--passed); background: var(--passed-bg); }
     .failed { color: var(--failed); background: var(--failed-bg); }
     .uncertain { color: var(--uncertain); background: var(--uncertain-bg); }
-    .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 18px; }
     .metric { padding: 15px; border: 1px solid var(--line); border-radius: 11px; background: #fafbfd; color: var(--muted); }
     .metric strong { display: block; margin-top: 5px; color: var(--ink); font-size: 23px; }
     .warnings { margin-top: 14px; }
@@ -114,6 +116,8 @@
       .panel { padding: 16px; }
       .upload-grid, .result-main, .summary-grid { grid-template-columns: 1fr; }
       .primary { width: 100%; }
+      .progress-heading { align-items: stretch; flex-direction: column; }
+      .progress-indicators { justify-content: space-between; }
       .result-header { align-items: stretch; flex-direction: column; }
       .step-list { margin-top: 0; }
       .step-row { grid-template-columns: 30px 1fr; }
@@ -149,7 +153,10 @@
       <div id="progress" class="analysis-progress" role="status" aria-live="polite" hidden>
         <div class="progress-heading">
           <strong id="progress-stage">Preparing analysis…</strong>
-          <span id="progress-percent" class="progress-percent">0%</span>
+          <div class="progress-indicators">
+            <span id="analysis-timer" class="analysis-timer" role="timer" aria-live="off" aria-label="Elapsed analysis time 0 minutes 0 seconds">Elapsed 0:00</span>
+            <span id="progress-percent" class="progress-percent">0%</span>
+          </div>
         </div>
         <div id="progress-bar" class="progress-bar" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div id="progress-fill" class="progress-fill"></div>
@@ -170,6 +177,7 @@
       <div class="summary-grid">
         <div class="metric">Steps passed<strong id="passed-metric"></strong></div>
         <div class="metric">Procedure duration<strong id="duration-metric"></strong></div>
+        <div class="metric">Analysis time<strong id="analysis-time-metric"></strong></div>
         <div class="metric">Review needed<strong id="review-metric"></strong></div>
       </div>
       <p id="analysis-summary" style="margin-top: 16px"></p>
@@ -204,6 +212,7 @@
     const progressBar = document.querySelector('#progress-bar');
     const progressFill = document.querySelector('#progress-fill');
     const progressDetail = document.querySelector('#progress-detail');
+    const analysisTimer = document.querySelector('#analysis-timer');
     const errorBox = document.querySelector('#error');
     const results = document.querySelector('#results');
     const video = document.querySelector('#analysis-video');
@@ -213,6 +222,9 @@
     let selectedStepId = null;
     let selectedModelLabel = '';
     let displayedProgress = 0;
+    let analysisStartedAt = null;
+    let analysisElapsedMs = 0;
+    let analysisTimerId = null;
 
     const STATUS = {
       passed: { symbol: '✓', label: 'Passed' },
@@ -227,6 +239,43 @@
     function releaseSourceUrl() {
       if (sourceUrl) URL.revokeObjectURL(sourceUrl);
       sourceUrl = null;
+    }
+
+    function formatElapsed(milliseconds) {
+      const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor(totalSeconds % 3600 / 60);
+      const seconds = totalSeconds % 60;
+      return hours > 0
+        ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+        : `${minutes}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function updateAnalysisTimer() {
+      const elapsed = analysisStartedAt == null
+        ? analysisElapsedMs
+        : performance.now() - analysisStartedAt;
+      const totalSeconds = Math.max(0, Math.floor(elapsed / 1000));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      analysisTimer.textContent = `Elapsed ${formatElapsed(elapsed)}`;
+      analysisTimer.setAttribute('aria-label', `Elapsed analysis time ${minutes} minutes ${seconds} seconds`);
+    }
+
+    function startAnalysisTimer() {
+      if (analysisTimerId != null) window.clearInterval(analysisTimerId);
+      analysisElapsedMs = 0;
+      analysisStartedAt = performance.now();
+      updateAnalysisTimer();
+      analysisTimerId = window.setInterval(updateAnalysisTimer, 1000);
+    }
+
+    function stopAnalysisTimer() {
+      if (analysisStartedAt != null) analysisElapsedMs = performance.now() - analysisStartedAt;
+      analysisStartedAt = null;
+      if (analysisTimerId != null) window.clearInterval(analysisTimerId);
+      analysisTimerId = null;
+      updateAnalysisTimer();
     }
 
     fileInput.addEventListener('change', () => {
@@ -277,6 +326,7 @@
       results.hidden = true;
       displayedProgress = 0;
       progressFill.style.width = '0%';
+      startAnalysisTimer();
       showProgress(0, 'Uploading video…', false);
       try {
         const body = new FormData();
@@ -311,6 +361,7 @@
         } else if (payload.status === 'failed') {
           throw new Error(payload.error || 'Analysis failed. Please try again.');
         } else if (payload.status === 'succeeded') {
+          stopAnalysisTimer();
           showProgress(100, payload.progress_message || 'Analysis complete.', false);
           await new Promise(resolve => setTimeout(resolve, 650));
           analysisResult = payload.result;
@@ -341,6 +392,7 @@
     }
 
     function showError(message) {
+      stopAnalysisTimer();
       progress.classList.remove('is-active');
       progress.classList.add('is-failed');
       progressStage.textContent = 'Analysis failed';
@@ -372,6 +424,7 @@
       setText('#duration-metric', result.procedure_duration_sec == null
         ? 'Not established'
         : `${result.procedure_duration_sec.toFixed(1)} s ${result.duration_compliant ? '✓' : '×'}`);
+      setText('#analysis-time-metric', formatElapsed(analysisElapsedMs));
       setText('#review-metric', `${review} ${review === 1 ? 'step' : 'steps'}`);
       setText('#analysis-summary', result.summary);
       renderWarnings(result.warnings);
