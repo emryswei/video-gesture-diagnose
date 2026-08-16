@@ -9,6 +9,8 @@ from video_analysis.analyzer import (
     merge_segment_analyses,
     merge_segment_classifications,
     open_hand_candidate_windows,
+    palm_candidate_windows,
+    refine_timeline_ranges,
     split_frame_segments,
 )
 from video_analysis.mediapipe_hands import HandFrameEvidence
@@ -19,7 +21,7 @@ from video_analysis.models import (
     StepStatus,
 )
 from video_analysis.sop import load_sop
-from video_analysis.video import SampledFrame, SampledVideo
+from video_analysis.video import SampledFrame, SampledVideo, VisualBoundary
 
 
 def model_result(status: StepStatus = StepStatus.PASSED) -> ModelAnalysis:
@@ -301,6 +303,82 @@ def test_landmark_guard_recovers_interlaced_pair_from_confused_palm_label():
     assert guarded.confidence == 0.85
 
 
+def test_landmark_guard_keeps_full_palm_candidate_range():
+    classification = ModelSegmentAnalysis(
+        step_id="palm_to_palm",
+        status=StepStatus.PASSED,
+        confidence=0.95,
+        start_sec=12.1,
+        end_sec=13.6,
+        observation="Palms rub together.",
+    )
+    evidence = [
+        HandFrameEvidence(12.1, 1, 0.86, 0.32, 0.9),
+        HandFrameEvidence(13.6, 1, 0.88, 0.30, 0.9),
+        HandFrameEvidence(14.9, 1, 0.84, 0.34, 0.9),
+    ]
+
+    guarded = apply_landmark_guard(
+        classification,
+        evidence,
+        allow_palm_range=True,
+    )
+
+    assert guarded.start_sec == 12.1
+    assert guarded.end_sec == 14.9
+
+
+def test_landmark_guard_changes_open_fingers_from_backs_to_dorsum():
+    classification = ModelSegmentAnalysis(
+        step_id="backs_of_fingers",
+        status=StepStatus.PASSED,
+        confidence=0.95,
+        start_sec=16.2,
+        end_sec=20.9,
+        observation="Model confused the hand back with folded knuckles.",
+    )
+    evidence = [
+        HandFrameEvidence(16.2, 1, 0.78, 0.62, 0.9),
+        HandFrameEvidence(17.8, 1, 0.73, 0.48, 0.9),
+        HandFrameEvidence(20.9, 1, 0.77, 0.59, 0.9),
+    ]
+
+    guarded = apply_landmark_guard(
+        classification,
+        evidence,
+        allow_dorsum_relabel=True,
+    )
+
+    assert guarded.step_id == "palm_over_dorsum"
+    assert guarded.start_sec == 16.2
+    assert guarded.end_sec == 20.9
+
+
+def test_landmark_guard_changes_confused_interlaced_to_dorsum():
+    classification = ModelSegmentAnalysis(
+        step_id="palms_fingers_interlaced",
+        status=StepStatus.PASSED,
+        confidence=0.9,
+        start_sec=16.2,
+        end_sec=20.9,
+        observation="Model confused two similar open-hand actions.",
+    )
+    evidence = [
+        HandFrameEvidence(16.2, 1, 0.78, 0.62, 0.9),
+        HandFrameEvidence(17.8, 1, 0.73, 0.48, 0.9),
+        HandFrameEvidence(20.9, 1, 0.77, 0.59, 0.9),
+    ]
+
+    guarded = apply_landmark_guard(
+        classification,
+        evidence,
+        allow_dorsum_relabel=True,
+    )
+
+    assert guarded.step_id == "palm_over_dorsum"
+    assert guarded.status == StepStatus.PASSED
+
+
 def test_backs_candidate_pairs_require_two_consecutive_compact_frames():
     frames = [SampledFrame(index, b"jpeg") for index in range(4)]
     evidence = {
@@ -331,6 +409,74 @@ def test_open_hand_window_keeps_tracking_across_one_missing_detection():
     assert [[frame.timestamp_sec for frame in window] for window in windows] == [
         [1, 2, 4]
     ]
+
+
+def test_palm_candidate_uses_full_continuous_extended_compact_run():
+    frames = [SampledFrame(index * 0.25, b"jpeg") for index in range(16)]
+    evidence = {
+        round(frame.timestamp_sec, 3): HandFrameEvidence(
+            frame.timestamp_sec,
+            1,
+            0.86 if 2 <= index <= 14 else 0.60,
+            0.32 if 2 <= index <= 14 else 0.55,
+            0.9,
+        )
+        for index, frame in enumerate(frames)
+    }
+
+    windows = palm_candidate_windows(frames, evidence)
+
+    assert len(windows) == 1
+    assert [frame.timestamp_sec for frame in windows[0]] == [0.5, 2.0, 3.5]
+
+
+def test_timeline_ranges_use_visual_changes_between_action_centers():
+    analysis = ModelAnalysis(
+        procedure_start_sec=10,
+        procedure_end_sec=44,
+        summary="Detected actions.",
+        steps=[
+            ModelStepResult(
+                step_id="palm_to_palm",
+                status=StepStatus.PASSED,
+                confidence=0.95,
+                start_sec=12.11,
+                end_sec=14.857,
+                observation="Palms rub together.",
+            ),
+            ModelStepResult(
+                step_id="palm_over_dorsum",
+                status=StepStatus.PASSED,
+                confidence=0.95,
+                start_sec=16.223,
+                end_sec=20.857,
+                observation="Palm rubs dorsum.",
+            ),
+            ModelStepResult(
+                step_id="palms_fingers_interlaced",
+                status=StepStatus.PASSED,
+                confidence=0.90,
+                start_sec=22.402,
+                end_sec=23.947,
+                observation="Fingers interlace.",
+            ),
+        ],
+    )
+    boundaries = [
+        VisualBoundary(15.356, 0.12),
+        VisualBoundary(16.105, 0.10),
+        VisualBoundary(21.848, 0.11),
+        VisualBoundary(22.098, 0.09),
+        VisualBoundary(25.344, 0.15),
+    ]
+
+    refined = refine_timeline_ranges(analysis, boundaries, source_duration=49.44)
+    by_id = {step.step_id: step for step in refined.steps}
+
+    assert by_id["palm_to_palm"].end_sec == 15.356
+    assert by_id["palm_over_dorsum"].start_sec == 15.356
+    assert by_id["palm_over_dorsum"].end_sec == 21.848
+    assert by_id["palms_fingers_interlaced"].start_sec == 21.848
 
 
 def test_video_analyzer_sends_overlapping_windows_to_segment_classifier(monkeypatch):
@@ -376,3 +522,73 @@ def test_video_analyzer_sends_overlapping_windows_to_segment_classifier(monkeypa
         12,
         13,
     ]
+
+
+def test_video_analyzer_uses_timeline_evidence_for_palm_candidate(monkeypatch):
+    sop = load_sop()
+    primary = SampledVideo(
+        duration_sec=24,
+        frames=[SampledFrame(float(index), b"jpeg") for index in range(16)],
+    )
+    timeline = SampledVideo(
+        duration_sec=24,
+        frames=[SampledFrame(index * 0.25, b"jpeg") for index in range(16)],
+    )
+
+    def fake_sample_video(_path, *, max_frames, **_kwargs):
+        return timeline if max_frames == 240 else primary
+
+    monkeypatch.setattr(analyzer_module, "sample_video", fake_sample_video)
+    monkeypatch.setattr(analyzer_module, "visual_change_boundaries", lambda _frames: [])
+    monkeypatch.setenv("TIMELINE_MAX_FRAMES", "240")
+
+    class FakeHandAnalyzer:
+        def __init__(self):
+            self.call_count = 0
+
+        def analyze(self, frames):
+            self.call_count += 1
+            is_timeline = self.call_count == 1
+            return [
+                HandFrameEvidence(
+                    frame.timestamp_sec,
+                    1,
+                    0.86 if is_timeline and 2 <= index <= 14 else 0.55,
+                    0.32 if is_timeline and 2 <= index <= 14 else 0.60,
+                    0.9,
+                )
+                for index, frame in enumerate(frames)
+            ]
+
+    class RecordingVLM:
+        model_name = "qwen3-vl:2b-instruct"
+
+        def set_frame_evidence(self, _evidence):
+            pass
+
+        def analyze_segment(self, frames, _definition):
+            timestamps = [frame.timestamp_sec for frame in frames]
+            if timestamps == [0.5, 2.0, 3.5]:
+                return ModelSegmentAnalysis(
+                    step_id="palm_to_palm",
+                    status=StepStatus.PASSED,
+                    confidence=0.95,
+                    start_sec=0.5,
+                    end_sec=2.0,
+                    observation="Palms rub together.",
+                )
+            return ModelSegmentAnalysis(
+                step_id=None,
+                status=StepStatus.UNCERTAIN,
+                confidence=0.2,
+                observation="Insufficient evidence in this segment.",
+            )
+
+    analyzer = VideoAnalyzer(vlm=RecordingVLM(), hand_analyzer=FakeHandAnalyzer())
+
+    result = analyzer.analyze(Path("video.mp4"), sop)
+    palm = next(step for step in result.steps if step.step_id == "palm_to_palm")
+
+    assert palm.status == StepStatus.PASSED
+    assert palm.start_sec == 0.5
+    assert palm.end_sec == 3.5

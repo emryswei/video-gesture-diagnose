@@ -7,7 +7,7 @@ from pathlib import Path
 
 import av
 from av.error import FFmpegError
-from PIL import Image
+from PIL import Image, ImageChops, ImageStat
 
 
 MIN_VIDEO_SECONDS = 15.0
@@ -28,6 +28,26 @@ class SampledFrame:
 class SampledVideo:
     duration_sec: float
     frames: list[SampledFrame]
+
+
+@dataclass(frozen=True)
+class VisualBoundary:
+    timestamp_sec: float
+    score: float
+
+
+def visual_change_boundaries(frames: list[SampledFrame]) -> list[VisualBoundary]:
+    if len(frames) < 2:
+        return []
+    boundaries: list[VisualBoundary] = []
+    previous = Image.open(io.BytesIO(frames[0].jpeg_bytes)).convert("RGB")
+    for frame in frames[1:]:
+        current = Image.open(io.BytesIO(frame.jpeg_bytes)).convert("RGB")
+        difference = ImageChops.difference(current, previous)
+        score = sum(ImageStat.Stat(difference).mean) / (3 * 255)
+        boundaries.append(VisualBoundary(frame.timestamp_sec, score))
+        previous = current
+    return boundaries
 
 
 def _duration_seconds(container: av.container.InputContainer, stream: av.video.VideoStream) -> float:

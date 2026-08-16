@@ -32,8 +32,11 @@ ollama pull qwen3-vl:2b-instruct
 
 The setup script downloads Google's Hand Landmarker model to the ignored local
 `models` directory. MediaPipe supplies finger-shape evidence to Qwen3-VL and
-guards the easily confused interlaced-fingers and backs-of-fingers steps. If the
-landmarker is unavailable, analysis continues with a warning and VLM-only output.
+guards the easily confused palm, interlaced-fingers, dorsum, and backs-of-fingers
+steps. A separate 4 FPS low-resolution pass detects visual transitions so the
+timeline uses action boundaries instead of the edges of broad VLM windows. If
+the landmarker is unavailable, analysis continues with a warning and VLM-only
+output.
 
 `start_demo.ps1` closes the Ollama tray app and stale model runners, then restarts
 Ollama with the `cpu_avx2` runner. GPU inference is disabled because the Vulkan

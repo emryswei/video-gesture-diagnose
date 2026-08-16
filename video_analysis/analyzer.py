@@ -18,10 +18,16 @@ from .mediapipe_hands import (
     MediaPipeAnalysisError,
     MediaPipeHandAnalyzer,
     is_bent_and_compact,
+    is_extended_and_compact,
     is_extended_and_open,
     is_extended_and_wide,
 )
-from .video import SampledFrame, sample_video
+from .video import (
+    SampledFrame,
+    VisualBoundary,
+    sample_video,
+    visual_change_boundaries,
+)
 from .vlm import OpenAICompatibleVLM
 
 
@@ -33,7 +39,51 @@ def apply_landmark_guard(
     evidence: list[HandFrameEvidence],
     *,
     allow_interlaced_relabel: bool = False,
+    allow_dorsum_relabel: bool = False,
+    allow_palm_range: bool = False,
 ) -> ModelSegmentAnalysis:
+    if (
+        allow_palm_range
+        and len(evidence) >= 3
+        and all(is_extended_and_compact(item) for item in evidence)
+        and result.step_id == "palm_to_palm"
+        and result.status == StepStatus.PASSED
+    ):
+        return result.model_copy(
+            update={
+                "start_sec": min(item.timestamp_sec for item in evidence),
+                "end_sec": max(item.timestamp_sec for item in evidence),
+                "observation": (
+                    f"{result.observation} MediaPipe confirmed the full continuous "
+                    "palm-to-palm interval."
+                ),
+            }
+        )
+    if (
+        allow_dorsum_relabel
+        and len(evidence) >= 3
+        and all(is_extended_and_open(item) for item in evidence)
+        and result.step_id
+        in {
+            "palm_to_palm",
+            "palm_over_dorsum",
+            "palms_fingers_interlaced",
+            "backs_of_fingers",
+        }
+        and result.status == StepStatus.PASSED
+    ):
+        return result.model_copy(
+            update={
+                "step_id": "palm_over_dorsum",
+                "confidence": min(result.confidence, 0.9),
+                "start_sec": min(item.timestamp_sec for item in evidence),
+                "end_sec": max(item.timestamp_sec for item in evidence),
+                "observation": (
+                    f"{result.observation} MediaPipe confirmed extended, open fingers "
+                    "rather than folded knuckles across the full interval."
+                ),
+            }
+        )
     if (
         result.step_id == "backs_of_fingers"
         and sum(is_bent_and_compact(item) for item in evidence) < 2
@@ -126,6 +176,93 @@ def open_hand_candidate_windows(
         run.append(frame)
     finish_run()
     return windows
+
+
+def palm_candidate_windows(
+    frames: list[SampledFrame],
+    evidence_by_timestamp: dict[float, HandFrameEvidence],
+) -> list[list[SampledFrame]]:
+    windows: list[list[SampledFrame]] = []
+    run: list[SampledFrame] = []
+
+    def finish_run() -> None:
+        if len(run) >= 3 and run[-1].timestamp_sec - run[0].timestamp_sec >= 1.5:
+            windows.append([run[0], run[len(run) // 2], run[-1]])
+
+    for frame in frames:
+        evidence = evidence_by_timestamp.get(round(frame.timestamp_sec, 3))
+        if evidence is not None and is_extended_and_compact(evidence):
+            run.append(frame)
+        else:
+            finish_run()
+            run = []
+    finish_run()
+    return windows
+
+
+def refine_timeline_ranges(
+    analysis: ModelAnalysis,
+    boundaries: list[VisualBoundary],
+    *,
+    source_duration: float,
+) -> ModelAnalysis:
+    steps = list(analysis.steps)
+    located = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if step.start_sec is not None and step.end_sec is not None
+    ]
+    located.sort(key=lambda item: ((item[1].start_sec or 0) + (item[1].end_sec or 0)) / 2)
+    for (left_index, left), (right_index, right) in zip(
+        located,
+        located[1:],
+        strict=False,
+    ):
+        left_center = ((left.start_sec or 0) + (left.end_sec or 0)) / 2
+        right_center = ((right.start_sec or 0) + (right.end_sec or 0)) / 2
+        candidates = [
+            item
+            for item in boundaries
+            if left_center < item.timestamp_sec < right_center
+        ]
+        if not candidates:
+            continue
+        transition = max(candidates, key=lambda item: item.score).timestamp_sec
+        left = steps[left_index].model_copy(update={"end_sec": transition})
+        right = steps[right_index].model_copy(update={"start_sec": transition})
+        steps[left_index] = left
+        steps[right_index] = right
+
+    if located:
+        last_index, _ = located[-1]
+        last = steps[last_index]
+        last_center = ((last.start_sec or 0) + (last.end_sec or 0)) / 2
+        search_end = min(source_duration, (last.end_sec or source_duration) + 0.5)
+        candidates = [
+            item
+            for item in boundaries
+            if last_center < item.timestamp_sec <= search_end and item.score >= 0.12
+        ]
+        if candidates:
+            transition = max(candidates, key=lambda item: item.score).timestamp_sec
+            steps[last_index] = last.model_copy(update={"end_sec": transition})
+
+    visible = [
+        step
+        for step in steps
+        if step.start_sec is not None and step.end_sec is not None
+    ]
+    return analysis.model_copy(
+        update={
+            "steps": steps,
+            "procedure_start_sec": (
+                min(step.start_sec or 0 for step in visible) if visible else None
+            ),
+            "procedure_end_sec": (
+                max(step.end_sec or 0 for step in visible) if visible else None
+            ),
+        }
+    )
 
 
 def split_frame_segments(
@@ -468,6 +605,11 @@ class VideoAnalyzer:
         self.max_image_edge = int(os.getenv("VIDEO_MAX_IMAGE_EDGE", "720"))
         self.frames_per_segment = int(os.getenv("MODEL_FRAMES_PER_SEGMENT", "3"))
         self.segment_overlap = int(os.getenv("MODEL_SEGMENT_OVERLAP_FRAMES", "1"))
+        self.timeline_sample_fps = float(os.getenv("TIMELINE_SAMPLE_FPS", "4"))
+        self.timeline_max_frames = int(os.getenv("TIMELINE_MAX_FRAMES", "240"))
+        self.timeline_max_image_edge = int(
+            os.getenv("TIMELINE_MAX_IMAGE_EDGE", "320")
+        )
         mediapipe_enabled = os.getenv("MEDIAPIPE_ENABLED", "false").lower() in {
             "1",
             "true",
@@ -487,6 +629,12 @@ class VideoAnalyzer:
             raise ValueError(
                 "MODEL_SEGMENT_OVERLAP_FRAMES must be smaller than MODEL_FRAMES_PER_SEGMENT"
             )
+        if (
+            self.timeline_sample_fps <= 0
+            or self.timeline_max_frames <= 0
+            or self.timeline_max_image_edge <= 0
+        ):
+            raise ValueError("Timeline sampling values must be greater than zero")
 
     def analyze(
         self,
@@ -513,6 +661,9 @@ class VideoAnalyzer:
             vlm = OpenAICompatibleVLM(model_name=model_name)
         mediapipe_warning: str | None = None
         hand_evidence_by_timestamp: dict[float, HandFrameEvidence] = {}
+        timeline_frames: list[SampledFrame] = []
+        timeline_evidence_by_timestamp: dict[float, HandFrameEvidence] = {}
+        timeline_boundaries: list[VisualBoundary] = []
         set_frame_evidence = getattr(vlm, "set_frame_evidence", None)
         if callable(set_frame_evidence):
             evidence_map: dict[float, str] = {}
@@ -525,14 +676,33 @@ class VideoAnalyzer:
                         False,
                     )
                 try:
+                    timeline_sampled = sample_video(
+                        video_path,
+                        sample_fps=self.timeline_sample_fps,
+                        max_frames=self.timeline_max_frames,
+                        max_image_edge=self.timeline_max_image_edge,
+                    )
+                    timeline_frames = timeline_sampled.frames
+                    timeline_boundaries = visual_change_boundaries(timeline_frames)
+                    timeline_evidence = self.hand_analyzer.analyze(timeline_frames)
+                    timeline_evidence_by_timestamp = {
+                        round(item.timestamp_sec, 3): item
+                        for item in timeline_evidence
+                    }
                     hand_evidence = self.hand_analyzer.analyze(sampled.frames)
                     hand_evidence_by_timestamp = {
                         round(item.timestamp_sec, 3): item for item in hand_evidence
                     }
                     evidence_map = {
                         item.timestamp_sec: item.to_prompt_text()
-                        for item in hand_evidence
+                        for item in timeline_evidence
                     }
+                    evidence_map.update(
+                        {
+                            item.timestamp_sec: item.to_prompt_text()
+                            for item in hand_evidence_by_timestamp.values()
+                        }
+                    )
                 except MediaPipeAnalysisError as exc:
                     mediapipe_warning = str(exc)
             set_frame_evidence(evidence_map)
@@ -582,12 +752,22 @@ class VideoAnalyzer:
         if callable(classify_segment) and hand_evidence_by_timestamp:
             candidate_groups = [
                 (
-                    "open-hand",
+                    "palm-to-palm",
+                    palm_candidate_windows(
+                        timeline_frames,
+                        timeline_evidence_by_timestamp,
+                    ),
+                    "palm",
+                    timeline_evidence_by_timestamp,
+                ),
+                (
+                    "palm-over-dorsum",
                     open_hand_candidate_windows(
                         sampled.frames,
                         hand_evidence_by_timestamp,
                     ),
-                    False,
+                    "dorsum",
+                    hand_evidence_by_timestamp,
                 ),
                 (
                     "interlaced-finger",
@@ -595,7 +775,8 @@ class VideoAnalyzer:
                         sampled.frames,
                         hand_evidence_by_timestamp,
                     ),
-                    True,
+                    "interlaced",
+                    hand_evidence_by_timestamp,
                 ),
                 (
                     "backs-of-fingers",
@@ -603,12 +784,13 @@ class VideoAnalyzer:
                         sampled.frames,
                         hand_evidence_by_timestamp,
                     ),
-                    False,
+                    None,
+                    hand_evidence_by_timestamp,
                 ),
             ]
-            candidate_count = sum(len(pairs) for _, pairs, _ in candidate_groups)
+            candidate_count = sum(len(pairs) for _, pairs, _, _ in candidate_groups)
             candidate_index = 0
-            for label, pairs, allow_interlaced_relabel in candidate_groups:
+            for label, pairs, guard_kind, candidate_evidence in candidate_groups:
                 for pair in pairs:
                     candidate_index += 1
                     if progress_callback:
@@ -625,14 +807,16 @@ class VideoAnalyzer:
                         )
                     classification = classify_segment(pair, sop)
                     pair_evidence = [
-                        hand_evidence_by_timestamp[round(frame.timestamp_sec, 3)]
+                        candidate_evidence[round(frame.timestamp_sec, 3)]
                         for frame in pair
                     ]
                     segment_results.append(
                         apply_landmark_guard(
                             classification,
                             pair_evidence,
-                            allow_interlaced_relabel=allow_interlaced_relabel,
+                            allow_interlaced_relabel=guard_kind == "interlaced",
+                            allow_dorsum_relabel=guard_kind == "dorsum",
+                            allow_palm_range=guard_kind == "palm",
                         )
                     )
         model_result = (
@@ -640,6 +824,12 @@ class VideoAnalyzer:
             if segment_results
             else merge_segment_analyses(legacy_results, sop)
         )
+        if timeline_boundaries:
+            model_result = refine_timeline_ranges(
+                model_result,
+                timeline_boundaries,
+                source_duration=sampled.duration_sec,
+            )
         if progress_callback:
             progress_callback(
                 95,
