@@ -3,11 +3,14 @@ from pathlib import Path
 import video_analysis.analyzer as analyzer_module
 from video_analysis.analyzer import (
     VideoAnalyzer,
+    apply_landmark_guard,
+    backs_candidate_pairs,
     finalize_result,
     merge_segment_analyses,
     merge_segment_classifications,
     split_frame_segments,
 )
+from video_analysis.mediapipe_hands import HandFrameEvidence
 from video_analysis.models import (
     ModelAnalysis,
     ModelSegmentAnalysis,
@@ -212,6 +215,67 @@ def test_segment_classifications_are_aggregated_by_step_and_time():
     assert merged.steps[0].end_sec == 10
     assert merged.steps[-1].status == StepStatus.PASSED
     assert merged.steps[3].status == StepStatus.UNCERTAIN
+
+
+def test_landmark_guard_rejects_unconfirmed_backs_of_fingers():
+    classification = ModelSegmentAnalysis(
+        step_id="backs_of_fingers",
+        status=StepStatus.PASSED,
+        confidence=0.95,
+        start_sec=22,
+        end_sec=25,
+        observation="Model chose bent fingers.",
+    )
+    evidence = [
+        HandFrameEvidence(22, 1, 0.85, 0.62, 0.9),
+        HandFrameEvidence(24, 1, 0.82, 0.58, 0.9),
+        HandFrameEvidence(25, 1, 0.64, 0.25, 0.9),
+    ]
+
+    guarded = apply_landmark_guard(classification, evidence)
+
+    assert guarded.step_id is None
+    assert guarded.status == StepStatus.UNCERTAIN
+    assert guarded.start_sec is None
+
+
+def test_landmark_guard_recovers_interlaced_pair_from_confused_palm_label():
+    classification = ModelSegmentAnalysis(
+        step_id="palm_to_palm",
+        status=StepStatus.PASSED,
+        confidence=0.95,
+        start_sec=22,
+        end_sec=24,
+        observation="Model saw facing palms.",
+    )
+    evidence = [
+        HandFrameEvidence(22, 1, 0.85, 0.62, 0.9),
+        HandFrameEvidence(24, 1, 0.82, 0.58, 0.9),
+    ]
+
+    guarded = apply_landmark_guard(
+        classification,
+        evidence,
+        allow_interlaced_relabel=True,
+    )
+
+    assert guarded.step_id == "palms_fingers_interlaced"
+    assert guarded.status == StepStatus.PASSED
+    assert guarded.confidence == 0.85
+
+
+def test_backs_candidate_pairs_require_two_consecutive_compact_frames():
+    frames = [SampledFrame(index, b"jpeg") for index in range(4)]
+    evidence = {
+        0: HandFrameEvidence(0, 1, 0.80, 0.60, 0.9),
+        1: HandFrameEvidence(1, 1, 0.64, 0.25, 0.9),
+        2: HandFrameEvidence(2, 1, 0.55, 0.24, 0.9),
+        3: HandFrameEvidence(3, 1, 0.62, 0.45, 0.9),
+    }
+
+    pairs = backs_candidate_pairs(frames, evidence)
+
+    assert [[frame.timestamp_sec for frame in pair] for pair in pairs] == [[1, 2]]
 
 
 def test_video_analyzer_sends_overlapping_windows_to_segment_classifier(monkeypatch):

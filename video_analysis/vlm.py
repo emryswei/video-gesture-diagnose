@@ -88,6 +88,9 @@ Do not report several SOP steps from the same window.
 Treat each pose_signature as required visual evidence, especially distinguishing_cue.
 Do not classify straight interlaced fingers as backs of fingers; backs_of_fingers requires
 visibly bent or folded fingers with their backs or knuckles contacting the opposite palm.
+When MediaPipe support is supplied, high finger extension with wide tip spread contradicts
+backs_of_fingers; lower extension with compact tip spread supports bent fingers. MediaPipe
+may detect only one hand during overlap, so use it to check finger geometry, not step identity.
 
 For a selected step, passed means the characteristic action is clearly visible. Failed is
 only for a clearly attempted but visibly incorrect action. Use uncertain when the action,
@@ -132,6 +135,12 @@ class OpenAICompatibleVLM:
         self.api_key = os.getenv("MODEL_API_KEY", "")
         self.model_name = model_name or os.getenv("MODEL_NAME", "qwen3-vl:4b-instruct")
         self.timeout_seconds = float(os.getenv("MODEL_TIMEOUT_SECONDS", "600"))
+        self._frame_evidence: dict[float, str] = {}
+
+    def set_frame_evidence(self, evidence: dict[float, str]) -> None:
+        self._frame_evidence = {
+            round(timestamp, 3): text for timestamp, text in evidence.items()
+        }
 
     def _request(
         self,
@@ -142,10 +151,14 @@ class OpenAICompatibleVLM:
     ) -> dict[str, Any]:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for index, frame in enumerate(frames, start=1):
+            evidence_text = self._frame_evidence.get(round(frame.timestamp_sec, 3))
             content.append(
                 {
                     "type": "text",
-                    "text": f"Frame {index}, source timestamp {frame.timestamp_sec:.3f} seconds:",
+                    "text": (
+                        f"Frame {index}, source timestamp {frame.timestamp_sec:.3f} seconds"
+                        f"{f'; {evidence_text}' if evidence_text else ''}:"
+                    ),
                 }
             )
             encoded = base64.b64encode(frame.jpeg_bytes).decode("ascii")

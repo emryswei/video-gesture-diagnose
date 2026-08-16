@@ -1,6 +1,6 @@
 # SOP Video Analysis Demo
 
-A single-user demo that audits a 15–60 second video against the seven visually auditable steps in the WHO alcohol-based handrub procedure. The V2 pipeline samples up to 32 timestamped frames, classifies one dominant action in each overlapping 4-frame window, and aggregates the evidence by step and time.
+A single-user demo that audits a 15–60 second video against the seven visually auditable steps in the WHO alcohol-based handrub procedure. The pipeline samples up to 32 timestamped frames, classifies one dominant action in each overlapping 3-frame window, and aggregates the evidence by step and time.
 
 ## What V2 includes
 
@@ -26,13 +26,27 @@ python -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ollama pull qwen3-vl:2b-instruct
+.\scripts\setup_mediapipe.ps1
 .\start_demo.ps1
 ```
+
+The setup script downloads Google's Hand Landmarker model to the ignored local
+`models` directory. MediaPipe supplies finger-shape evidence to Qwen3-VL and
+guards the easily confused interlaced-fingers and backs-of-fingers steps. If the
+landmarker is unavailable, analysis continues with a warning and VLM-only output.
 
 `start_demo.ps1` closes the Ollama tray app and stale model runners, then restarts
 Ollama with the `cpu_avx2` runner. GPU inference is disabled because the Vulkan
 backend caused system-level black screens on the current AMD GPU. The application
 keeps one model and one inference request active at a time.
+
+After startup, `ollama ps` should show `100% CPU`. Do not launch the Ollama tray
+app during analysis because it can replace the controlled CPU server with its own
+environment settings.
+
+On the tested Ryzen 9 laptop, the 49-second reference video takes about 23 minutes
+with the 2B model in CPU-only mode. This is intentionally slower but avoids the
+unstable experimental Vulkan path on the installed AMD driver.
 
 Open <http://127.0.0.1:8000>.
 

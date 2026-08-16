@@ -13,11 +13,91 @@ from .models import (
     StepResult,
     StepStatus,
 )
+from .mediapipe_hands import (
+    HandFrameEvidence,
+    MediaPipeAnalysisError,
+    MediaPipeHandAnalyzer,
+    is_bent_and_compact,
+    is_extended_and_wide,
+)
 from .video import SampledFrame, sample_video
 from .vlm import OpenAICompatibleVLM
 
 
 ProgressCallback = Callable[[int, str, str, bool], None]
+
+
+def apply_landmark_guard(
+    result: ModelSegmentAnalysis,
+    evidence: list[HandFrameEvidence],
+    *,
+    allow_interlaced_relabel: bool = False,
+) -> ModelSegmentAnalysis:
+    if (
+        result.step_id == "backs_of_fingers"
+        and sum(is_bent_and_compact(item) for item in evidence) < 2
+    ):
+        return result.model_copy(
+            update={
+                "step_id": None,
+                "status": StepStatus.UNCERTAIN,
+                "start_sec": None,
+                "end_sec": None,
+                "observation": (
+                    "MediaPipe landmarks did not confirm bent, compact fingers across "
+                    "two frames, so the backs-of-fingers classification needs review."
+                ),
+            }
+        )
+    if (
+        allow_interlaced_relabel
+        and len(evidence) == 2
+        and all(is_extended_and_wide(item) for item in evidence)
+        and result.step_id
+        in {"palm_to_palm", "palms_fingers_interlaced", "backs_of_fingers"}
+        and result.status == StepStatus.PASSED
+    ):
+        return result.model_copy(
+            update={
+                "step_id": "palms_fingers_interlaced",
+                "confidence": min(result.confidence, 0.85),
+                "observation": (
+                    f"{result.observation} MediaPipe confirmed extended fingers with "
+                    "wide fingertip spacing across both frames."
+                ),
+            }
+        )
+    return result
+
+
+def interlaced_candidate_pairs(
+    frames: list[SampledFrame],
+    evidence_by_timestamp: dict[float, HandFrameEvidence],
+) -> list[list[SampledFrame]]:
+    pairs: list[list[SampledFrame]] = []
+    for index in range(len(frames) - 1):
+        pair = frames[index : index + 2]
+        evidence = [
+            evidence_by_timestamp.get(round(frame.timestamp_sec, 3)) for frame in pair
+        ]
+        if all(item is not None and is_extended_and_wide(item) for item in evidence):
+            pairs.append(pair)
+    return pairs
+
+
+def backs_candidate_pairs(
+    frames: list[SampledFrame],
+    evidence_by_timestamp: dict[float, HandFrameEvidence],
+) -> list[list[SampledFrame]]:
+    pairs: list[list[SampledFrame]] = []
+    for index in range(len(frames) - 1):
+        pair = frames[index : index + 2]
+        evidence = [
+            evidence_by_timestamp.get(round(frame.timestamp_sec, 3)) for frame in pair
+        ]
+        if all(item is not None and is_bent_and_compact(item) for item in evidence):
+            pairs.append(pair)
+    return pairs
 
 
 def split_frame_segments(
@@ -325,13 +405,30 @@ def finalize_result(
 
 
 class VideoAnalyzer:
-    def __init__(self, vlm: OpenAICompatibleVLM | None = None) -> None:
+    def __init__(
+        self,
+        vlm: OpenAICompatibleVLM | None = None,
+        hand_analyzer: MediaPipeHandAnalyzer | None = None,
+    ) -> None:
         self.vlm = vlm or OpenAICompatibleVLM()
         self.sample_fps = float(os.getenv("VIDEO_SAMPLE_FPS", "2"))
         self.max_frames = int(os.getenv("VIDEO_MAX_FRAMES", "96"))
         self.max_image_edge = int(os.getenv("VIDEO_MAX_IMAGE_EDGE", "720"))
         self.frames_per_segment = int(os.getenv("MODEL_FRAMES_PER_SEGMENT", "3"))
         self.segment_overlap = int(os.getenv("MODEL_SEGMENT_OVERLAP_FRAMES", "1"))
+        mediapipe_enabled = os.getenv("MEDIAPIPE_ENABLED", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        self.hand_analyzer = hand_analyzer
+        if self.hand_analyzer is None and mediapipe_enabled:
+            configured_path = Path(
+                os.getenv("MEDIAPIPE_MODEL_PATH", "models/hand_landmarker.task")
+            )
+            if not configured_path.is_absolute():
+                configured_path = Path(__file__).resolve().parents[1] / configured_path
+            self.hand_analyzer = MediaPipeHandAnalyzer(configured_path)
         if not 2 <= self.frames_per_segment <= 4:
             raise ValueError("MODEL_FRAMES_PER_SEGMENT must be between 2 and 4")
         if not 0 <= self.segment_overlap < self.frames_per_segment:
@@ -359,11 +456,39 @@ class VideoAnalyzer:
             max_frames=self.max_frames,
             max_image_edge=self.max_image_edge,
         )
+        vlm = self.vlm
+        if model_name and model_name != getattr(vlm, "model_name", None):
+            vlm = OpenAICompatibleVLM(model_name=model_name)
+        mediapipe_warning: str | None = None
+        hand_evidence_by_timestamp: dict[float, HandFrameEvidence] = {}
+        set_frame_evidence = getattr(vlm, "set_frame_evidence", None)
+        if callable(set_frame_evidence):
+            evidence_map: dict[float, str] = {}
+            if self.hand_analyzer is not None:
+                if progress_callback:
+                    progress_callback(
+                        22,
+                        "preparing_video",
+                        "Extracting MediaPipe hand landmarks.",
+                        False,
+                    )
+                try:
+                    hand_evidence = self.hand_analyzer.analyze(sampled.frames)
+                    hand_evidence_by_timestamp = {
+                        round(item.timestamp_sec, 3): item for item in hand_evidence
+                    }
+                    evidence_map = {
+                        item.timestamp_sec: item.to_prompt_text()
+                        for item in hand_evidence
+                    }
+                except MediaPipeAnalysisError as exc:
+                    mediapipe_warning = str(exc)
+            set_frame_evidence(evidence_map)
         if progress_callback:
             progress_callback(
-                20,
+                23,
                 "preparing_video",
-                f"{len(sampled.frames)} representative frames extracted.",
+                f"{len(sampled.frames)} representative frames and hand landmarks prepared.",
                 False,
             )
             progress_callback(
@@ -372,9 +497,6 @@ class VideoAnalyzer:
                 "AI is checking the 7 procedure steps.",
                 True,
             )
-        vlm = self.vlm
-        if model_name and model_name != getattr(vlm, "model_name", None):
-            vlm = OpenAICompatibleVLM(model_name=model_name)
         segments = split_frame_segments(
             sampled.frames,
             self.frames_per_segment,
@@ -392,9 +514,67 @@ class VideoAnalyzer:
                     True,
                 )
             if callable(classify_segment):
-                segment_results.append(classify_segment(segment, sop))
+                classification = classify_segment(segment, sop)
+                if hand_evidence_by_timestamp:
+                    segment_evidence = [
+                        hand_evidence_by_timestamp[round(frame.timestamp_sec, 3)]
+                        for frame in segment
+                    ]
+                    classification = apply_landmark_guard(
+                        classification,
+                        segment_evidence,
+                    )
+                segment_results.append(classification)
             else:
                 legacy_results.append(vlm.analyze(segment, sop))
+        if callable(classify_segment) and hand_evidence_by_timestamp:
+            candidate_groups = [
+                (
+                    "interlaced-finger",
+                    interlaced_candidate_pairs(
+                        sampled.frames,
+                        hand_evidence_by_timestamp,
+                    ),
+                    True,
+                ),
+                (
+                    "backs-of-fingers",
+                    backs_candidate_pairs(
+                        sampled.frames,
+                        hand_evidence_by_timestamp,
+                    ),
+                    False,
+                ),
+            ]
+            candidate_count = sum(len(pairs) for _, pairs, _ in candidate_groups)
+            candidate_index = 0
+            for label, pairs, allow_interlaced_relabel in candidate_groups:
+                for pair in pairs:
+                    candidate_index += 1
+                    if progress_callback:
+                        progress_callback(
+                            90 + int(
+                                4 * (candidate_index - 1) / max(candidate_count, 1)
+                            ),
+                            "model_analysis",
+                            (
+                                f"AI is checking {label} evidence "
+                                f"{candidate_index} of {candidate_count}."
+                            ),
+                            True,
+                        )
+                    classification = classify_segment(pair, sop)
+                    pair_evidence = [
+                        hand_evidence_by_timestamp[round(frame.timestamp_sec, 3)]
+                        for frame in pair
+                    ]
+                    segment_results.append(
+                        apply_landmark_guard(
+                            classification,
+                            pair_evidence,
+                            allow_interlaced_relabel=allow_interlaced_relabel,
+                        )
+                    )
         model_result = (
             merge_segment_classifications(segment_results, sop)
             if segment_results
@@ -407,4 +587,9 @@ class VideoAnalyzer:
                 "Preparing the evidence report.",
                 False,
             )
-        return finalize_result(model_result, sop, sampled.duration_sec)
+        result = finalize_result(model_result, sop, sampled.duration_sec)
+        if mediapipe_warning:
+            result = result.model_copy(
+                update={"warnings": [*result.warnings, mediapipe_warning]}
+            )
+        return result
