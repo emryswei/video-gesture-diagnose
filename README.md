@@ -1,14 +1,15 @@
 # SOP Video Analysis Demo
 
-A single-user demo that audits a 15–60 second video against the seven visually auditable steps in the WHO alcohol-based handrub procedure. The pipeline samples up to 32 timestamped frames, classifies one dominant action in each overlapping 3-frame window, and aggregates the evidence by step and time.
+A single-user demo that audits a 15–60 second video against the Hong Kong CHP alcohol-based handrub procedure. The default SOP includes product application plus seven hand-rubbing actions, ending with wrist rubbing. Fast Demo mode samples up to 24 timestamped frames and classifies twelve non-overlapping 2-frame windows before targeted gesture checks.
 
 ## What V2 includes
 
 - English-only upload and evidence UI
 - One active asynchronous analysis at a time
 - `passed`, `failed`, and `uncertain` step results
-- Procedure duration validation against the WHO 20–30 second range
+- Procedure duration validation against the Hong Kong CHP minimum of 20 seconds
 - Local browser playback with clickable timestamp evidence
+- 30-minute in-memory result cache for identical video, SOP, and model combinations
 - No source-video persistence; server temporary files are deleted after analysis
 
 ## Requirements
@@ -47,16 +48,23 @@ After startup, `ollama ps` should show `100% CPU`. Do not launch the Ollama tray
 app during analysis because it can replace the controlled CPU server with its own
 environment settings.
 
-On the tested Ryzen 9 laptop, the 49-second reference video takes about 23 minutes
-with the 2B model in CPU-only mode. This is intentionally slower but avoids the
-unstable experimental Vulkan path on the installed AMD driver.
+Fast Demo mode reduces repeated image processing with 24 smaller frames and no
+window overlap. CPU inference remains
+slower than GPU inference, but avoids the unstable experimental Vulkan path on the
+installed AMD driver. Repeating an identical analysis within 30 minutes returns the
+cached result without running the model again.
 
 Open <http://127.0.0.1:8000>.
 
 The checked-in `.env.example` targets Ollama at `http://127.0.0.1:11434/v1`.
-The local `.env` uses `qwen3-vl:2b-instruct` by default with 32-frame/448px
-sampling and overlapping 3-frame inference windows to reduce adjacent-gesture
-mixing. The 4B model remains an optional, slower fallback.
+The local `.env` uses `qwen3-vl:2b-instruct` by default with 24-frame/336px
+sampling and non-overlapping 2-frame inference windows. MediaPipe and visual
+transition refinement remain enabled for gesture and timestamp accuracy. The 4B
+model remains an optional, slower fallback.
+
+Fast Demo mode disables extra VLM candidate rechecks by default, keeping the first
+analysis to 12 model calls. Set `MODEL_TARGETED_RECHECKS=true` for a slower,
+higher-redundancy pass. MediaPipe evidence collection remains enabled in both modes.
 
 To run the 4B fallback explicitly:
 
@@ -82,7 +90,7 @@ Create one analysis:
 ```powershell
 curl.exe -X POST http://127.0.0.1:8000/api/analyses `
   -F "video=@C:\path\to\handrub.mp4" `
-  -F "sop_id=who_handrub"
+  -F "sop_id=hk_chp_handrub"
 ```
 
 Poll the returned ID:
@@ -91,7 +99,7 @@ Poll the returned ID:
 curl.exe http://127.0.0.1:8000/api/analyses/ANALYSIS_ID
 ```
 
-Only one job may be `queued` or `analyzing`. A concurrent create request returns HTTP 409. Completed results remain in memory for 30 minutes; expired or server-lost IDs return HTTP 410.
+Only one job may be `queued` or `analyzing`. A concurrent create request returns HTTP 409. Completed results and matching cache entries remain in memory for 30 minutes; expired or server-lost IDs return HTTP 410. Cached jobs return `cache_hit: true`.
 
 ## Tests
 

@@ -1,0 +1,136 @@
+{
+  "id": "hk_chp_handrub",
+  "standard_version": "HK-CHP",
+  "definition_version": 1,
+  "title": "Hong Kong CHP Alcohol-Based Handrub",
+  "source_url": "https://www.chp.gov.hk/tc/static/32985.html",
+  "duration_min_seconds": 20,
+  "duration_max_seconds": null,
+  "steps": [
+    {
+      "id": "apply_product",
+      "order": 1,
+      "label": "Apply product",
+      "instruction": "Clearly show enough alcohol handrub entering a cupped palm to cover both hands.",
+      "required": true,
+      "requires_both_sides": false,
+      "pose_signature": {
+        "hand_orientation": "One open cupped palm receives product from a dispenser or the other hand.",
+        "motion_pattern": "Product is visibly dispensed into the palm.",
+        "symmetry_required": false,
+        "distinguishing_cue": "Visible product application; rubbing gestures alone are not this step."
+      }
+    },
+    {
+      "id": "palm_to_palm",
+      "order": 2,
+      "label": "Palm to palm",
+      "instruction": "Rub both palms together with visible back-and-forth motion.",
+      "required": true,
+      "requires_both_sides": false,
+      "pose_signature": {
+        "hand_orientation": "Both open palms face and contact each other.",
+        "fingers_interlaced": false,
+        "fingers_bent": false,
+        "motion_pattern": "Back-and-forth rubbing with fingers aligned rather than threaded.",
+        "symmetry_required": true,
+        "distinguishing_cue": "Neither hand dorsum is used as the rubbing surface and fingers are not interlaced."
+      }
+    },
+    {
+      "id": "palm_over_dorsum",
+      "order": 3,
+      "label": "Palm over dorsum",
+      "instruction": "Rub one palm over the back of the other hand with fingers interlaced, then repeat on the other side.",
+      "required": true,
+      "requires_both_sides": true,
+      "pose_signature": {
+        "hand_orientation": "One open palm lies on the dorsum of the other hand; hands are stacked palm-to-back.",
+        "fingers_interlaced": true,
+        "fingers_bent": false,
+        "motion_pattern": "Back-and-forth rubbing over each hand dorsum, reversing sides.",
+        "symmetry_required": false,
+        "distinguishing_cue": "A hand dorsum is clearly the rubbing surface; this is not palm-to-palm interlacing."
+      }
+    },
+    {
+      "id": "palms_fingers_interlaced",
+      "order": 4,
+      "label": "Fingers interlaced",
+      "instruction": "Rub palm to palm with fingers interlaced.",
+      "required": true,
+      "requires_both_sides": false,
+      "pose_signature": {
+        "hand_orientation": "Both palms face each other while the fingers are threaded between the opposite fingers.",
+        "fingers_interlaced": true,
+        "fingers_bent": false,
+        "motion_pattern": "Back-and-forth rubbing through the finger spaces.",
+        "symmetry_required": true,
+        "distinguishing_cue": "Fingers remain straight and interlaced palm-to-palm; no hand dorsum or bent knuckles are rubbed."
+      }
+    },
+    {
+      "id": "backs_of_fingers",
+      "order": 5,
+      "label": "Backs of fingers",
+      "instruction": "Rub the backs of bent fingers against the opposing palm on both sides.",
+      "required": true,
+      "requires_both_sides": true,
+      "pose_signature": {
+        "hand_orientation": "The backs of folded fingers or knuckles press into the opposite palm.",
+        "fingers_interlaced": false,
+        "fingers_bent": true,
+        "motion_pattern": "Side-to-side or rotational rubbing of bent finger backs, reversing sides.",
+        "symmetry_required": false,
+        "distinguishing_cue": "Bent or folded fingers are mandatory; straight interlaced fingers belong to another step."
+      }
+    },
+    {
+      "id": "thumbs",
+      "order": 6,
+      "label": "Thumb rubbing",
+      "instruction": "Rotationally rub each thumb while clasped by the opposite palm.",
+      "required": true,
+      "requires_both_sides": true,
+      "pose_signature": {
+        "hand_orientation": "One opposite palm fully clasps a single protruding thumb.",
+        "fingers_bent": true,
+        "motion_pattern": "Rotational rubbing around one thumb, then the other.",
+        "symmetry_required": false,
+        "distinguishing_cue": "A single thumb is visibly encircled; this is not fingertip or wrist rubbing."
+      }
+    },
+    {
+      "id": "fingertips_in_palm",
+      "order": 7,
+      "label": "Fingertips in palm",
+      "instruction": "Rotationally rub fingertips in the opposite palm on both sides.",
+      "required": true,
+      "requires_both_sides": true,
+      "pose_signature": {
+        "hand_orientation": "Gathered fingertips of one hand press into the center of the opposite open palm.",
+        "fingers_interlaced": false,
+        "fingers_bent": true,
+        "motion_pattern": "Rotational rubbing of fingertip pads in each palm.",
+        "symmetry_required": false,
+        "distinguishing_cue": "Several fingertips contact the palm together; no single thumb or wrist is encircled."
+      }
+    },
+    {
+      "id": "wrists",
+      "order": 8,
+      "label": "Wrist rubbing",
+      "instruction": "Rotationally rub each wrist with the opposite hand.",
+      "required": true,
+      "requires_both_sides": true,
+      "pose_signature": {
+        "hand_orientation": "One hand encircles the opposite wrist below the heel of the hand.",
+        "fingers_interlaced": false,
+        "fingers_bent": true,
+        "motion_pattern": "Rotational rubbing around one wrist, then the other.",
+        "symmetry_required": false,
+        "distinguishing_cue": "Contact is below the hand at the wrist; this is not a clasped thumb or fingertips pressing into a palm."
+      }
+    }
+  ]
+}

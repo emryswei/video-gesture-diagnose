@@ -37,7 +37,7 @@ def main() -> None:
                 response = client.post(
                     f"{APP_URL}/api/analyses",
                     files={"video": ("smoke.avi", video, "video/x-msvideo")},
-                    data={"sop_id": "who_handrub"},
+                    data={"sop_id": "hk_chp_handrub"},
                 )
             response.raise_for_status()
             job = response.json()
@@ -53,7 +53,10 @@ def main() -> None:
                 if result["status"] in {"succeeded", "failed"}:
                     if result["status"] != "succeeded":
                         raise RuntimeError(result.get("error", "analysis failed"))
-                    print(f"steps={len(result['result']['steps'])}")
+                    step_count = len(result["result"]["steps"])
+                    if step_count != 8:
+                        raise RuntimeError(f"Expected 8 HK CHP steps, got {step_count}")
+                    print(f"steps={step_count}")
                     return
                 time.sleep(2)
         raise TimeoutError("analysis did not finish within 20 minutes")

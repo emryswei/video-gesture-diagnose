@@ -116,7 +116,7 @@ def get_sop(sop_id: str):
 )
 async def create_analysis(
     video: UploadFile = File(...),
-    sop_id: str = Form("who_handrub"),
+    sop_id: str = Form("hk_chp_handrub"),
     model_name: str = Form(os.getenv("MODEL_NAME", "qwen3-vl:4b-instruct")),
 ):
     jobs: JobManager = app.state.jobs
@@ -177,6 +177,7 @@ async def create_analysis(
             progress_message=job.progress_message,
             progress_is_estimated=job.progress_is_estimated,
             expires_at=job.expires_at,
+            cache_hit=job.cache_hit,
         )
     finally:
         await video.close()

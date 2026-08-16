@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 @lru_cache(maxsize=8)
-def load_sop(sop_id: str = "who_handrub") -> SOPDefinition:
+def load_sop(sop_id: str = "hk_chp_handrub") -> SOPDefinition:
     if re.fullmatch(r"[a-z0-9_]+", sop_id) is None:
         raise ValueError(f"Unknown SOP: {sop_id}")
     path = PROJECT_ROOT / "sops" / f"{sop_id}.json"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 from contextlib import suppress
@@ -44,6 +45,7 @@ class JobManager:
         self._analyzer = analyzer
         self._retention = timedelta(minutes=retention_minutes)
         self._jobs: dict[str, AnalysisJob] = {}
+        self._result_cache: dict[str, tuple[datetime, AnalysisResult]] = {}
         self._active_id: str | None = None
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -107,6 +109,32 @@ class JobManager:
         ]
         for job_id in expired:
             self._jobs.pop(job_id, None)
+        expired_cache_keys = [
+            key for key, (expires_at, _) in self._result_cache.items()
+            if expires_at <= now
+        ]
+        for key in expired_cache_keys:
+            self._result_cache.pop(key, None)
+
+    @staticmethod
+    def _cache_key(video_path: Path, sop: SOPDefinition, model_name: str) -> str:
+        digest = hashlib.sha256()
+        with video_path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        digest.update(sop.model_dump_json().encode("utf-8"))
+        digest.update(model_name.encode("utf-8"))
+        return digest.hexdigest()
+
+    def _get_cached_result(self, cache_key: str) -> AnalysisResult | None:
+        cached = self._result_cache.get(cache_key)
+        if cached is None:
+            return None
+        expires_at, result = cached
+        if expires_at <= datetime.now(timezone.utc):
+            self._result_cache.pop(cache_key, None)
+            return None
+        return result.model_copy(deep=True)
 
     async def _run(
         self,
@@ -134,28 +162,51 @@ class JobManager:
                 is_estimated,
             )
 
-        analysis_task = asyncio.create_task(
-            asyncio.to_thread(
-                self._analyzer.analyze,
-                video_path,
-                sop,
-                progress_callback=report_progress,
-                model_name=model_name,
-            )
-        )
-        estimate_task = asyncio.create_task(
-            self._advance_estimated_progress(analysis_id, analysis_task)
-        )
+        estimate_task: asyncio.Task[None] | None = None
         terminal_status = JobStatus.FAILED
         try:
-            job.result = await analysis_task
-            self._apply_progress(
-                analysis_id,
-                100,
-                ProgressStage.COMPLETE,
-                "Analysis complete.",
-                False,
+            cache_key = await asyncio.to_thread(
+                self._cache_key,
+                video_path,
+                sop,
+                model_name,
             )
+            cached_result = self._get_cached_result(cache_key)
+            if cached_result is not None:
+                job.cache_hit = True
+                job.result = cached_result
+                self._apply_progress(
+                    analysis_id,
+                    100,
+                    ProgressStage.COMPLETE,
+                    "Analysis loaded from cache.",
+                    False,
+                )
+            else:
+                analysis_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        self._analyzer.analyze,
+                        video_path,
+                        sop,
+                        progress_callback=report_progress,
+                        model_name=model_name,
+                    )
+                )
+                estimate_task = asyncio.create_task(
+                    self._advance_estimated_progress(analysis_id, analysis_task)
+                )
+                job.result = await analysis_task
+                self._result_cache[cache_key] = (
+                    datetime.now(timezone.utc) + self._retention,
+                    job.result.model_copy(deep=True),
+                )
+                self._apply_progress(
+                    analysis_id,
+                    100,
+                    ProgressStage.COMPLETE,
+                    "Analysis complete.",
+                    False,
+                )
             terminal_status = JobStatus.SUCCEEDED
         except (VideoValidationError, ModelServiceError) as exc:
             job.error = str(exc)
@@ -164,9 +215,10 @@ class JobManager:
             job.error = "Analysis failed. Please verify the video and model service, then try again."
             self._mark_failed(job)
         finally:
-            estimate_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await estimate_task
+            if estimate_task is not None:
+                estimate_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await estimate_task
             video_path.unlink(missing_ok=True)
             job.expires_at = datetime.now(timezone.utc) + self._retention
             job.status = terminal_status
@@ -209,7 +261,7 @@ class JobManager:
                     analysis_id,
                     min(estimated, 90),
                     ProgressStage.MODEL_ANALYSIS,
-                    "AI is checking the 7 procedure steps.",
+                    "AI is checking the procedure steps.",
                     True,
                 )
             await asyncio.sleep(1)

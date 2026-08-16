@@ -51,8 +51,10 @@ def test_all_steps_and_duration_must_pass():
 
     assert result.overall_status == StepStatus.PASSED
     assert result.duration_compliant is True
-    assert len(result.steps) == 7
-    assert [step.step_order for step in result.steps] == list(range(1, 8))
+    assert len(result.steps) == len(sop.steps)
+    assert [step.step_order for step in result.steps] == list(
+        range(1, len(sop.steps) + 1)
+    )
     assert result.warnings == []
     assert "score" not in result.model_dump()
 
@@ -91,6 +93,18 @@ def test_out_of_range_duration_fails():
 
     assert result.duration_compliant is False
     assert result.overall_status == StepStatus.FAILED
+
+
+def test_hk_chp_duration_over_thirty_seconds_is_allowed():
+    sop = load_sop()
+    output = model_result().model_copy(
+        update={"procedure_start_sec": 2, "procedure_end_sec": 40}
+    )
+
+    result = finalize_result(output, sop, source_duration=45)
+
+    assert result.duration_compliant is True
+    assert result.overall_status == StepStatus.PASSED
 
 
 def test_passed_step_without_complete_timestamps_becomes_uncertain():
@@ -490,6 +504,7 @@ def test_video_analyzer_sends_overlapping_windows_to_segment_classifier(monkeypa
     )
     monkeypatch.setattr(analyzer_module, "sample_video", lambda *_args, **_kwargs: sampled)
     monkeypatch.setenv("MODEL_FRAMES_PER_SEGMENT", "3")
+    monkeypatch.setenv("MODEL_SEGMENT_OVERLAP_FRAMES", "1")
 
     class RecordingVLM:
         model_name = "qwen3-vl:4b-instruct"
@@ -541,6 +556,7 @@ def test_video_analyzer_uses_timeline_evidence_for_palm_candidate(monkeypatch):
     monkeypatch.setattr(analyzer_module, "sample_video", fake_sample_video)
     monkeypatch.setattr(analyzer_module, "visual_change_boundaries", lambda _frames: [])
     monkeypatch.setenv("TIMELINE_MAX_FRAMES", "240")
+    monkeypatch.setenv("MODEL_TARGETED_RECHECKS", "true")
 
     class FakeHandAnalyzer:
         def __init__(self):
@@ -592,3 +608,129 @@ def test_video_analyzer_uses_timeline_evidence_for_palm_candidate(monkeypatch):
     assert palm.status == StepStatus.PASSED
     assert palm.start_sec == 0.5
     assert palm.end_sec == 3.5
+
+
+def test_fast_demo_mode_uses_twelve_non_overlapping_model_calls(monkeypatch):
+    sop = load_sop()
+    sampled = SampledVideo(
+        duration_sec=48,
+        frames=[SampledFrame(float(index * 2), b"jpeg") for index in range(24)],
+    )
+    monkeypatch.setattr(analyzer_module, "sample_video", lambda *_args, **_kwargs: sampled)
+    monkeypatch.setenv("VIDEO_MAX_FRAMES", "24")
+    monkeypatch.setenv("VIDEO_MAX_IMAGE_EDGE", "336")
+    monkeypatch.setenv("MODEL_FRAMES_PER_SEGMENT", "2")
+    monkeypatch.setenv("MODEL_SEGMENT_OVERLAP_FRAMES", "0")
+
+    class RecordingVLM:
+        model_name = "qwen3-vl:2b-instruct"
+
+        def __init__(self):
+            self.calls = []
+
+        def analyze_segment(self, frames, _definition):
+            self.calls.append(frames)
+            return ModelSegmentAnalysis(
+                step_id=None,
+                status=StepStatus.UNCERTAIN,
+                confidence=0.2,
+                observation="No clear action.",
+            )
+
+    vlm = RecordingVLM()
+    analyzer = VideoAnalyzer(vlm=vlm)
+
+    analyzer.analyze(Path("video.mp4"), sop)
+
+    assert analyzer.max_frames == 24
+    assert analyzer.max_image_edge == 336
+    assert analyzer.targeted_rechecks is False
+    assert [len(call) for call in vlm.calls] == [2] * 12
+
+
+def test_fast_demo_uses_timeline_landmarks_to_correct_palm_and_interlaced(monkeypatch):
+    sop = load_sop()
+    primary = SampledVideo(
+        duration_sec=48,
+        frames=[
+            SampledFrame(12.5, b"jpeg"),
+            SampledFrame(15.5, b"jpeg"),
+            SampledFrame(21.6, b"jpeg"),
+            SampledFrame(23.7, b"jpeg"),
+        ],
+    )
+    timeline = SampledVideo(
+        duration_sec=48,
+        frames=[
+            SampledFrame(12.1, b"jpeg"),
+            SampledFrame(13.6, b"jpeg"),
+            SampledFrame(14.8, b"jpeg"),
+            SampledFrame(21.6, b"jpeg"),
+            SampledFrame(21.8, b"jpeg"),
+        ],
+    )
+
+    def fake_sample_video(_path, *, max_frames, **_kwargs):
+        return timeline if max_frames == 240 else primary
+
+    monkeypatch.setattr(analyzer_module, "sample_video", fake_sample_video)
+    monkeypatch.setattr(analyzer_module, "visual_change_boundaries", lambda _frames: [])
+    monkeypatch.setenv("VIDEO_MAX_FRAMES", "24")
+    monkeypatch.setenv("MODEL_FRAMES_PER_SEGMENT", "2")
+    monkeypatch.setenv("MODEL_SEGMENT_OVERLAP_FRAMES", "0")
+    monkeypatch.setenv("MODEL_TARGETED_RECHECKS", "false")
+
+    class FakeHandAnalyzer:
+        def __init__(self):
+            self.call_count = 0
+
+        def analyze(self, frames):
+            self.call_count += 1
+            if self.call_count == 1:
+                return [
+                    HandFrameEvidence(frame.timestamp_sec, 1, 0.86, 0.32, 0.9)
+                    if index < 3
+                    else HandFrameEvidence(frame.timestamp_sec, 1, 0.86, 0.62, 0.9)
+                    for index, frame in enumerate(frames)
+                ]
+            return [
+                HandFrameEvidence(frame.timestamp_sec, 1, 0.6, 0.5, 0.9)
+                for frame in frames
+            ]
+
+    class ConfusedVLM:
+        model_name = "qwen3-vl:2b-instruct"
+
+        def set_frame_evidence(self, _evidence):
+            pass
+
+        def analyze_segment(self, frames, _definition):
+            if frames[0].timestamp_sec < 20:
+                return ModelSegmentAnalysis(
+                    step_id="palm_over_dorsum",
+                    status=StepStatus.PASSED,
+                    confidence=0.95,
+                    start_sec=12.5,
+                    end_sec=15.5,
+                    observation="Model confused compact palms with the dorsum step.",
+                )
+            return ModelSegmentAnalysis(
+                step_id="palm_to_palm",
+                status=StepStatus.PASSED,
+                confidence=0.95,
+                start_sec=21.6,
+                end_sec=23.7,
+                observation="Model confused wide interlaced fingers with palms.",
+            )
+
+    analyzer = VideoAnalyzer(vlm=ConfusedVLM(), hand_analyzer=FakeHandAnalyzer())
+
+    result = analyzer.analyze(Path("video.mp4"), sop)
+    by_id = {step.step_id: step for step in result.steps}
+
+    assert by_id["palm_to_palm"].status == StepStatus.PASSED
+    assert by_id["palm_to_palm"].start_sec == 12.1
+    assert by_id["palm_to_palm"].end_sec == 14.8
+    assert by_id["palms_fingers_interlaced"].status == StepStatus.PASSED
+    assert by_id["palms_fingers_interlaced"].start_sec == 21.6
+    assert by_id["palms_fingers_interlaced"].end_sec == 21.8

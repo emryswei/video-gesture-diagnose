@@ -135,6 +135,9 @@ class OpenAICompatibleVLM:
         self.api_key = os.getenv("MODEL_API_KEY", "")
         self.model_name = model_name or os.getenv("MODEL_NAME", "qwen3-vl:4b-instruct")
         self.timeout_seconds = float(os.getenv("MODEL_TIMEOUT_SECONDS", "600"))
+        self.segment_max_tokens = int(os.getenv("MODEL_SEGMENT_MAX_TOKENS", "220"))
+        if self.segment_max_tokens <= 0:
+            raise ValueError("MODEL_SEGMENT_MAX_TOKENS must be greater than zero")
         self._frame_evidence: dict[float, str] = {}
 
     def set_frame_evidence(self, evidence: dict[float, str]) -> None:
@@ -216,7 +219,11 @@ class OpenAICompatibleVLM:
         sop: SOPDefinition,
     ) -> ModelSegmentAnalysis:
         result = ModelSegmentAnalysis.model_validate(
-            self._request(frames, build_segment_prompt(sop), max_tokens=350)
+            self._request(
+                frames,
+                build_segment_prompt(sop),
+                max_tokens=self.segment_max_tokens,
+            )
         )
         valid_ids = {step.id for step in sop.steps}
         if result.step_id not in valid_ids:

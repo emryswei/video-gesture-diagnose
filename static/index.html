@@ -129,7 +129,7 @@
   <main>
     <header>
       <h1>SOP Video Analysis</h1>
-      <p class="muted">Audit a short video against the WHO alcohol-based handrub procedure.</p>
+      <p class="muted">Audit a short video against the Hong Kong CHP alcohol-based handrub procedure.</p>
     </header>
 
     <section class="panel" aria-labelledby="upload-title">
@@ -169,7 +169,7 @@
     <section id="results" class="panel" aria-labelledby="result-title" hidden>
       <div class="result-header">
         <div>
-          <h2 id="result-title">WHO Hand-rub Analysis</h2>
+          <h2 id="result-title">Hong Kong CHP Hand-rub Analysis</h2>
           <p id="file-summary" class="muted"></p>
         </div>
         <span id="overall-status" class="badge"></span>
@@ -225,6 +225,7 @@
     let analysisStartedAt = null;
     let analysisElapsedMs = 0;
     let analysisTimerId = null;
+    let analysisWasCached = false;
 
     const STATUS = {
       passed: { symbol: '✓', label: 'Passed' },
@@ -324,6 +325,7 @@
       submitButton.disabled = true;
       errorBox.hidden = true;
       results.hidden = true;
+      analysisWasCached = false;
       displayedProgress = 0;
       progressFill.style.width = '0%';
       startAnalysisTimer();
@@ -331,7 +333,7 @@
       try {
         const body = new FormData();
         body.append('video', selectedFile);
-        body.append('sop_id', 'who_handrub');
+        body.append('sop_id', 'hk_chp_handrub');
         body.append('model_name', modelSelect.value);
         selectedModelLabel = modelSelect.options[modelSelect.selectedIndex].text;
         const response = await fetch('/api/analyses', { method: 'POST', body });
@@ -362,6 +364,7 @@
           throw new Error(payload.error || 'Analysis failed. Please try again.');
         } else if (payload.status === 'succeeded') {
           stopAnalysisTimer();
+          analysisWasCached = payload.cache_hit === true;
           showProgress(100, payload.progress_message || 'Analysis complete.', false);
           await new Promise(resolve => setTimeout(resolve, 650));
           analysisResult = payload.result;
@@ -419,7 +422,7 @@
       const overallValue = STATUS[result.overall_status] ?? STATUS.uncertain;
       overall.className = `badge ${result.overall_status}`;
       overall.textContent = `${overallValue.symbol} ${overallValue.label}`;
-      setText('#file-summary', `${selectedFile.name} · ${result.source_video_duration_sec.toFixed(1)} seconds · ${selectedModelLabel}`);
+      setText('#file-summary', `${selectedFile.name} · ${result.source_video_duration_sec.toFixed(1)} seconds · ${selectedModelLabel}${analysisWasCached ? ' · Cached result' : ''}`);
       setText('#passed-metric', `${passed} / ${steps.length}`);
       setText('#duration-metric', result.procedure_duration_sec == null
         ? 'Not established'

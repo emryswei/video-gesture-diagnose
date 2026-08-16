@@ -67,12 +67,15 @@ class SOPDefinition(BaseModel):
     title: str
     source_url: str
     duration_min_seconds: float = Field(ge=0)
-    duration_max_seconds: float = Field(gt=0)
+    duration_max_seconds: float | None = Field(default=None, gt=0)
     steps: list[StepDefinition] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_definition(self) -> "SOPDefinition":
-        if self.duration_max_seconds < self.duration_min_seconds:
+        if (
+            self.duration_max_seconds is not None
+            and self.duration_max_seconds < self.duration_min_seconds
+        ):
             raise ValueError("duration_max_seconds must be >= duration_min_seconds")
         if len({step.id for step in self.steps}) != len(self.steps):
             raise ValueError("step ids must be unique")
@@ -164,6 +167,7 @@ class AnalysisJob(BaseModel):
     progress_message: str = "Video uploaded."
     progress_is_estimated: bool = False
     expires_at: datetime | None = None
+    cache_hit: bool = False
     result: AnalysisResult | None = None
     error: str | None = None
 
@@ -177,6 +181,7 @@ class JobCreated(BaseModel):
     progress_message: str = "Video uploaded."
     progress_is_estimated: bool = False
     expires_at: datetime | None = None
+    cache_hit: bool = False
 
 
 class ErrorResponse(BaseModel):

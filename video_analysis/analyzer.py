@@ -46,11 +46,23 @@ def apply_landmark_guard(
         allow_palm_range
         and len(evidence) >= 3
         and all(is_extended_and_compact(item) for item in evidence)
-        and result.step_id == "palm_to_palm"
+        and result.step_id
+        in {
+            "palm_to_palm",
+            "palm_over_dorsum",
+            "palms_fingers_interlaced",
+            "backs_of_fingers",
+        }
         and result.status == StepStatus.PASSED
     ):
         return result.model_copy(
             update={
+                "step_id": "palm_to_palm",
+                "confidence": (
+                    result.confidence
+                    if result.step_id == "palm_to_palm"
+                    else min(result.confidence, 0.9)
+                ),
                 "start_sec": min(item.timestamp_sec for item in evidence),
                 "end_sec": max(item.timestamp_sec for item in evidence),
                 "observation": (
@@ -112,6 +124,8 @@ def apply_landmark_guard(
             update={
                 "step_id": "palms_fingers_interlaced",
                 "confidence": min(result.confidence, 0.85),
+                "start_sec": min(item.timestamp_sec for item in evidence),
+                "end_sec": max(item.timestamp_sec for item in evidence),
                 "observation": (
                     f"{result.observation} MediaPipe confirmed extended fingers with "
                     "wide fingertip spacing across both frames."
@@ -283,6 +297,24 @@ def split_frame_segments(
     if starts[-1] != final_start:
         starts.append(final_start)
     return [frames[index : index + target_size] for index in starts]
+
+
+def _candidate_with_center_in_segment(
+    candidates: list[list[SampledFrame]],
+    segment: list[SampledFrame],
+) -> list[SampledFrame] | None:
+    segment_start = segment[0].timestamp_sec
+    segment_end = segment[-1].timestamp_sec
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if segment_start
+            <= candidate[len(candidate) // 2].timestamp_sec
+            <= segment_end
+        ),
+        None,
+    )
 
 
 def normalize_model_result(result: ModelAnalysis, sop: SOPDefinition) -> ModelAnalysis:
@@ -549,15 +581,21 @@ def finalize_result(
         start = min(start, source_duration)
         end = min(end, source_duration)
         procedure_duration = round(end - start, 2)
-        duration_compliant = (
-            sop.duration_min_seconds
-            <= procedure_duration
-            <= sop.duration_max_seconds
+        duration_compliant = procedure_duration >= sop.duration_min_seconds and (
+            sop.duration_max_seconds is None
+            or procedure_duration <= sop.duration_max_seconds
         )
         if not duration_compliant:
+            required_duration = (
+                f"at least {sop.duration_min_seconds:g} seconds"
+                if sop.duration_max_seconds is None
+                else (
+                    f"{sop.duration_min_seconds:g}-"
+                    f"{sop.duration_max_seconds:g} seconds"
+                )
+            )
             warnings.append(
-                f"Procedure duration is outside the required "
-                f"{sop.duration_min_seconds:g}-{sop.duration_max_seconds:g} seconds."
+                f"Procedure duration is outside the required {required_duration}."
             )
     else:
         warnings.append("The procedure time range could not be established reliably.")
@@ -601,10 +639,14 @@ class VideoAnalyzer:
     ) -> None:
         self.vlm = vlm or OpenAICompatibleVLM()
         self.sample_fps = float(os.getenv("VIDEO_SAMPLE_FPS", "2"))
-        self.max_frames = int(os.getenv("VIDEO_MAX_FRAMES", "96"))
-        self.max_image_edge = int(os.getenv("VIDEO_MAX_IMAGE_EDGE", "720"))
-        self.frames_per_segment = int(os.getenv("MODEL_FRAMES_PER_SEGMENT", "3"))
-        self.segment_overlap = int(os.getenv("MODEL_SEGMENT_OVERLAP_FRAMES", "1"))
+        self.max_frames = int(os.getenv("VIDEO_MAX_FRAMES", "24"))
+        self.max_image_edge = int(os.getenv("VIDEO_MAX_IMAGE_EDGE", "336"))
+        self.frames_per_segment = int(os.getenv("MODEL_FRAMES_PER_SEGMENT", "2"))
+        self.segment_overlap = int(os.getenv("MODEL_SEGMENT_OVERLAP_FRAMES", "0"))
+        self.targeted_rechecks = os.getenv(
+            "MODEL_TARGETED_RECHECKS",
+            "false",
+        ).lower() in {"1", "true", "yes"}
         self.timeline_sample_fps = float(os.getenv("TIMELINE_SAMPLE_FPS", "4"))
         self.timeline_max_frames = int(os.getenv("TIMELINE_MAX_FRAMES", "240"))
         self.timeline_max_image_edge = int(
@@ -716,7 +758,7 @@ class VideoAnalyzer:
             progress_callback(
                 25,
                 "model_analysis",
-                "AI is checking the 7 procedure steps.",
+                f"AI is checking the {len(sop.steps)} procedure steps.",
                 True,
             )
         segments = split_frame_segments(
@@ -726,6 +768,14 @@ class VideoAnalyzer:
         )
         segment_results: list[ModelSegmentAnalysis] = []
         legacy_results: list[ModelAnalysis] = []
+        timeline_palm_candidates = palm_candidate_windows(
+            timeline_frames,
+            timeline_evidence_by_timestamp,
+        )
+        timeline_interlaced_candidates = interlaced_candidate_pairs(
+            timeline_frames,
+            timeline_evidence_by_timestamp,
+        )
         classify_segment = getattr(vlm, "analyze_segment", None)
         for index, segment in enumerate(segments, start=1):
             if progress_callback:
@@ -746,10 +796,44 @@ class VideoAnalyzer:
                         classification,
                         segment_evidence,
                     )
+                    palm_candidate = _candidate_with_center_in_segment(
+                        timeline_palm_candidates,
+                        segment,
+                    )
+                    if palm_candidate is not None:
+                        classification = apply_landmark_guard(
+                            classification,
+                            [
+                                timeline_evidence_by_timestamp[
+                                    round(frame.timestamp_sec, 3)
+                                ]
+                                for frame in palm_candidate
+                            ],
+                            allow_palm_range=True,
+                        )
+                    interlaced_candidate = _candidate_with_center_in_segment(
+                        timeline_interlaced_candidates,
+                        segment,
+                    )
+                    if interlaced_candidate is not None:
+                        classification = apply_landmark_guard(
+                            classification,
+                            [
+                                timeline_evidence_by_timestamp[
+                                    round(frame.timestamp_sec, 3)
+                                ]
+                                for frame in interlaced_candidate
+                            ],
+                            allow_interlaced_relabel=True,
+                        )
                 segment_results.append(classification)
             else:
                 legacy_results.append(vlm.analyze(segment, sop))
-        if callable(classify_segment) and hand_evidence_by_timestamp:
+        if (
+            callable(classify_segment)
+            and hand_evidence_by_timestamp
+            and self.targeted_rechecks
+        ):
             candidate_groups = [
                 (
                     "palm-to-palm",
