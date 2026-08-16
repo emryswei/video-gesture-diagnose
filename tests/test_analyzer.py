@@ -8,6 +8,7 @@ from video_analysis.analyzer import (
     finalize_result,
     merge_segment_analyses,
     merge_segment_classifications,
+    open_hand_candidate_windows,
     split_frame_segments,
 )
 from video_analysis.mediapipe_hands import HandFrameEvidence
@@ -217,6 +218,42 @@ def test_segment_classifications_are_aggregated_by_step_and_time():
     assert merged.steps[3].status == StepStatus.UNCERTAIN
 
 
+def test_merge_trims_thumb_start_after_confirmed_backs_of_fingers():
+    sop = load_sop()
+    results = [
+        ModelSegmentAnalysis(
+            step_id="backs_of_fingers",
+            status=StepStatus.PASSED,
+            confidence=0.95,
+            start_sec=25.492,
+            end_sec=27.037,
+            observation="Bent knuckles rub the opposite palm.",
+        ),
+        ModelSegmentAnalysis(
+            step_id="thumbs",
+            status=StepStatus.PASSED,
+            confidence=0.95,
+            start_sec=25.492,
+            end_sec=31.672,
+            observation="The thumb is clasped and rotated.",
+        ),
+        ModelSegmentAnalysis(
+            step_id="thumbs",
+            status=StepStatus.PASSED,
+            confidence=0.95,
+            start_sec=30.127,
+            end_sec=34.762,
+            observation="Thumb rubbing continues.",
+        ),
+    ]
+
+    merged = merge_segment_classifications(results, sop)
+    by_id = {step.step_id: step for step in merged.steps}
+
+    assert by_id["backs_of_fingers"].end_sec == 27.037
+    assert by_id["thumbs"].start_sec == 27.037
+
+
 def test_landmark_guard_rejects_unconfirmed_backs_of_fingers():
     classification = ModelSegmentAnalysis(
         step_id="backs_of_fingers",
@@ -276,6 +313,24 @@ def test_backs_candidate_pairs_require_two_consecutive_compact_frames():
     pairs = backs_candidate_pairs(frames, evidence)
 
     assert [[frame.timestamp_sec for frame in pair] for pair in pairs] == [[1, 2]]
+
+
+def test_open_hand_window_keeps_tracking_across_one_missing_detection():
+    frames = [SampledFrame(index, b"jpeg") for index in range(6)]
+    evidence = {
+        0: HandFrameEvidence(0, 1, 0.60, 0.30, 0.9),
+        1: HandFrameEvidence(1, 2, 0.78, 0.62, 0.9),
+        2: HandFrameEvidence(2, 1, 0.73, 0.48, 0.9),
+        3: HandFrameEvidence(3, 0),
+        4: HandFrameEvidence(4, 1, 0.77, 0.59, 0.9),
+        5: HandFrameEvidence(5, 1, 0.63, 0.25, 0.9),
+    }
+
+    windows = open_hand_candidate_windows(frames, evidence)
+
+    assert [[frame.timestamp_sec for frame in window] for window in windows] == [
+        [1, 2, 4]
+    ]
 
 
 def test_video_analyzer_sends_overlapping_windows_to_segment_classifier(monkeypatch):

@@ -93,7 +93,7 @@
     .segment.failed { background: var(--failed); }
     .segment.uncertain { background: #c38600; }
     .segment.selected { box-shadow: 0 0 0 3px #17212b; opacity: 1; }
-    .unlocated { position: absolute; inset: 2px 5px; display: grid; place-items: center; border: 1px dashed #c38600; border-radius: 3px; color: var(--uncertain); background: var(--uncertain-bg); font-size: 11px; }
+    .unlocated { position: absolute; top: 2px; bottom: 2px; left: 50%; width: min(180px, calc(100% - 10px)); transform: translateX(-50%); display: grid; place-items: center; border: 1px dashed #c38600; border-radius: 3px; color: var(--uncertain); background: var(--uncertain-bg); font-size: 11px; }
     .unlocated.failed { border-color: var(--failed); color: var(--failed); background: var(--failed-bg); }
     .playhead { position: absolute; z-index: 3; top: 0; bottom: 0; width: 2px; background: #111820; pointer-events: none; }
     .timeline-axis { display: flex; justify-content: space-between; margin: 8px 0 0 35px; color: var(--muted); font-size: 12px; }

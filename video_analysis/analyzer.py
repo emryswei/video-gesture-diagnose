@@ -18,6 +18,7 @@ from .mediapipe_hands import (
     MediaPipeAnalysisError,
     MediaPipeHandAnalyzer,
     is_bent_and_compact,
+    is_extended_and_open,
     is_extended_and_wide,
 )
 from .video import SampledFrame, sample_video
@@ -98,6 +99,33 @@ def backs_candidate_pairs(
         if all(item is not None and is_bent_and_compact(item) for item in evidence):
             pairs.append(pair)
     return pairs
+
+
+def open_hand_candidate_windows(
+    frames: list[SampledFrame],
+    evidence_by_timestamp: dict[float, HandFrameEvidence],
+) -> list[list[SampledFrame]]:
+    windows: list[list[SampledFrame]] = []
+    run: list[SampledFrame] = []
+
+    def finish_run() -> None:
+        if len(run) >= 3:
+            windows.append(run[:3])
+
+    for frame in frames:
+        evidence = evidence_by_timestamp.get(round(frame.timestamp_sec, 3))
+        if evidence is None or evidence.detected_hands == 0:
+            continue
+        if not is_extended_and_open(evidence):
+            finish_run()
+            run = []
+            continue
+        if run and frame.timestamp_sec - run[-1].timestamp_sec > 3.5:
+            finish_run()
+            run = []
+        run.append(frame)
+    finish_run()
+    return windows
 
 
 def split_frame_segments(
@@ -288,6 +316,30 @@ def merge_segment_classifications(
                 ),
             )
         )
+
+    by_id = {item.step_id: index for index, item in enumerate(merged_steps)}
+    backs_index = by_id.get("backs_of_fingers")
+    thumbs_index = by_id.get("thumbs")
+    if backs_index is not None and thumbs_index is not None:
+        backs = merged_steps[backs_index]
+        thumbs = merged_steps[thumbs_index]
+        if (
+            backs.status == StepStatus.PASSED
+            and backs.start_sec is not None
+            and backs.end_sec is not None
+            and thumbs.start_sec is not None
+            and thumbs.end_sec is not None
+            and backs.start_sec <= thumbs.start_sec < backs.end_sec < thumbs.end_sec
+        ):
+            merged_steps[thumbs_index] = thumbs.model_copy(
+                update={
+                    "start_sec": backs.end_sec,
+                    "observation": (
+                        f"{thumbs.observation} Timeline start was trimmed to avoid "
+                        "overlap with confirmed backs-of-fingers evidence."
+                    ),
+                }
+            )
 
     visible_steps = [
         item
@@ -529,6 +581,14 @@ class VideoAnalyzer:
                 legacy_results.append(vlm.analyze(segment, sop))
         if callable(classify_segment) and hand_evidence_by_timestamp:
             candidate_groups = [
+                (
+                    "open-hand",
+                    open_hand_candidate_windows(
+                        sampled.frames,
+                        hand_evidence_by_timestamp,
+                    ),
+                    False,
+                ),
                 (
                     "interlaced-finger",
                     interlaced_candidate_pairs(

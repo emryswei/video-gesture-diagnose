@@ -70,6 +70,15 @@ def is_extended_and_wide(evidence: HandFrameEvidence) -> bool:
     )
 
 
+def is_extended_and_open(evidence: HandFrameEvidence) -> bool:
+    return (
+        evidence.mean_extension_score is not None
+        and evidence.mean_tip_spread_ratio is not None
+        and evidence.mean_extension_score >= 0.72
+        and evidence.mean_tip_spread_ratio >= 0.45
+    )
+
+
 def is_bent_and_compact(evidence: HandFrameEvidence) -> bool:
     return (
         evidence.mean_extension_score is not None
