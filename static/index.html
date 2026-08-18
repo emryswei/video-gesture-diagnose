@@ -177,7 +177,7 @@
       <div class="summary-grid">
         <div class="metric">Steps passed<strong id="passed-metric"></strong></div>
         <div class="metric">Procedure duration<strong id="duration-metric"></strong></div>
-        <div class="metric">Analysis time<strong id="analysis-time-metric"></strong></div>
+        <div class="metric">Total analysis time<strong id="analysis-time-metric"></strong></div>
         <div class="metric">Review needed<strong id="review-metric"></strong></div>
       </div>
       <p id="analysis-summary" style="margin-top: 16px"></p>
@@ -252,15 +252,27 @@
         : `${minutes}:${String(seconds).padStart(2, '0')}`;
     }
 
+    function formatCompletedElapsed(milliseconds) {
+      return milliseconds < 1000 ? '<1 s' : formatElapsed(milliseconds);
+    }
+
     function updateAnalysisTimer() {
       const elapsed = analysisStartedAt == null
         ? analysisElapsedMs
         : performance.now() - analysisStartedAt;
+      const isComplete = analysisStartedAt == null && analysisElapsedMs > 0;
       const totalSeconds = Math.max(0, Math.floor(elapsed / 1000));
       const minutes = Math.floor(totalSeconds / 60);
       const seconds = totalSeconds % 60;
-      analysisTimer.textContent = `Elapsed ${formatElapsed(elapsed)}`;
-      analysisTimer.setAttribute('aria-label', `Elapsed analysis time ${minutes} minutes ${seconds} seconds`);
+      const label = isComplete ? 'Total' : 'Elapsed';
+      const formatted = isComplete ? formatCompletedElapsed(elapsed) : formatElapsed(elapsed);
+      analysisTimer.textContent = `${label} ${formatted}`;
+      analysisTimer.setAttribute(
+        'aria-label',
+        isComplete && elapsed < 1000
+          ? 'Total analysis time less than 1 second'
+          : `${label} analysis time ${minutes} minutes ${seconds} seconds`
+      );
     }
 
     function startAnalysisTimer() {
@@ -283,6 +295,7 @@
       selectedFile = fileInput.files[0] ?? null;
       releaseSourceUrl();
       results.hidden = true;
+      progress.hidden = true;
       if (selectedFile) {
         sourceUrl = URL.createObjectURL(selectedFile);
         video.src = sourceUrl;
@@ -369,7 +382,6 @@
           await new Promise(resolve => setTimeout(resolve, 650));
           analysisResult = payload.result;
           renderResult(analysisResult);
-          progress.hidden = true;
           submitButton.disabled = !modelSelect.value;
           return;
         }
@@ -427,7 +439,7 @@
       setText('#duration-metric', result.procedure_duration_sec == null
         ? 'Not established'
         : `${result.procedure_duration_sec.toFixed(1)} s ${result.duration_compliant ? '✓' : '×'}`);
-      setText('#analysis-time-metric', formatElapsed(analysisElapsedMs));
+      setText('#analysis-time-metric', formatCompletedElapsed(analysisElapsedMs));
       setText('#review-metric', `${review} ${review === 1 ? 'step' : 'steps'}`);
       setText('#analysis-summary', result.summary);
       renderWarnings(result.warnings);
