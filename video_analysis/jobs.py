@@ -21,6 +21,12 @@ from .video import VideoValidationError
 from .vlm import ModelServiceError
 
 
+def _configured_model_name() -> str:
+    if os.getenv("MODEL_PROVIDER", "aws_bedrock").strip().lower() == "aws_bedrock":
+        return os.getenv("AWS_BEDROCK_MODEL_ID", "qwen.qwen3-vl-235b-a22b")
+    return os.getenv("MODEL_NAME", "qwen3-vl:2b-instruct")
+
+
 class Analyzer(Protocol):
     def analyze(
         self,
@@ -64,7 +70,7 @@ class JobManager:
         sop: SOPDefinition,
         model_name: str | None = None,
     ) -> AnalysisJob:
-        selected_model = model_name or os.getenv("MODEL_NAME", "qwen3-vl:4b-instruct")
+        selected_model = model_name or _configured_model_name()
         async with self._lock:
             self._purge_expired()
             if self._active_job_exists():

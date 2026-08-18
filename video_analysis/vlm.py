@@ -7,6 +7,9 @@ import re
 from typing import Any
 
 import httpx
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .models import (
     ModelAnalysis,
@@ -129,10 +132,8 @@ def _extract_json(text: str) -> dict[str, Any]:
     return value
 
 
-class OpenAICompatibleVLM:
+class BaseVLM:
     def __init__(self, model_name: str | None = None) -> None:
-        self.base_url = os.getenv("MODEL_BASE_URL", "http://127.0.0.1:8001/v1").rstrip("/")
-        self.api_key = os.getenv("MODEL_API_KEY", "")
         self.model_name = model_name or os.getenv("MODEL_NAME", "qwen3-vl:4b-instruct")
         self.timeout_seconds = float(os.getenv("MODEL_TIMEOUT_SECONDS", "600"))
         self.segment_max_tokens = int(os.getenv("MODEL_SEGMENT_MAX_TOKENS", "220"))
@@ -144,6 +145,70 @@ class OpenAICompatibleVLM:
         self._frame_evidence = {
             round(timestamp, 3): text for timestamp, text in evidence.items()
         }
+
+    def _request(
+        self,
+        frames: list[SampledFrame],
+        prompt: str,
+        *,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def analyze(self, frames: list[SampledFrame], sop: SOPDefinition) -> ModelAnalysis:
+        return ModelAnalysis.model_validate(
+            self._request(frames, build_prompt(sop), max_tokens=1800)
+        )
+
+    def analyze_segment(
+        self,
+        frames: list[SampledFrame],
+        sop: SOPDefinition,
+    ) -> ModelSegmentAnalysis:
+        result = ModelSegmentAnalysis.model_validate(
+            self._request(
+                frames,
+                build_segment_prompt(sop),
+                max_tokens=self.segment_max_tokens,
+            )
+        )
+        valid_ids = {step.id for step in sop.steps}
+        if result.step_id not in valid_ids:
+            return result.model_copy(
+                update={
+                    "step_id": None,
+                    "status": StepStatus.UNCERTAIN,
+                    "start_sec": None,
+                    "end_sec": None,
+                }
+            )
+        if result.start_sec is None or result.end_sec is None:
+            return result.model_copy(
+                update={
+                    "status": StepStatus.UNCERTAIN,
+                    "start_sec": None,
+                    "end_sec": None,
+                    "observation": (
+                        f"{result.observation} The segment did not include a complete "
+                        "evidence timestamp range."
+                    ),
+                }
+            )
+        window_start = min(frame.timestamp_sec for frame in frames)
+        window_end = max(frame.timestamp_sec for frame in frames)
+        return result.model_copy(
+            update={
+                "start_sec": max(window_start, min(result.start_sec, window_end)),
+                "end_sec": max(window_start, min(result.end_sec, window_end)),
+            }
+        )
+
+
+class OpenAICompatibleVLM(BaseVLM):
+    def __init__(self, model_name: str | None = None) -> None:
+        super().__init__(model_name)
+        self.base_url = os.getenv("MODEL_BASE_URL", "http://127.0.0.1:8001/v1").rstrip("/")
+        self.api_key = os.getenv("MODEL_API_KEY", "")
 
     def _request(
         self,
@@ -208,50 +273,91 @@ class OpenAICompatibleVLM:
                 "The model service is unavailable or returned an invalid response. Please try again."
             ) from exc
 
-    def analyze(self, frames: list[SampledFrame], sop: SOPDefinition) -> ModelAnalysis:
-        return ModelAnalysis.model_validate(
-            self._request(frames, build_prompt(sop), max_tokens=1800)
+
+
+class AWSBedrockVLM(BaseVLM):
+    def __init__(self, model_name: str | None = None) -> None:
+        configured_model = model_name or os.getenv(
+            "AWS_BEDROCK_MODEL_ID",
+            "qwen.qwen3-vl-235b-a22b",
+        )
+        super().__init__(configured_model)
+        self.region = os.getenv(
+            "AWS_REGION",
+            os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1"),
+        )
+        profile = os.getenv("AWS_PROFILE") or None
+        session = boto3.Session(profile_name=profile, region_name=self.region)
+        self.client = session.client(
+            "bedrock-runtime",
+            config=Config(
+                connect_timeout=min(self.timeout_seconds, 30),
+                read_timeout=self.timeout_seconds,
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
         )
 
-    def analyze_segment(
+    def _request(
         self,
         frames: list[SampledFrame],
-        sop: SOPDefinition,
-    ) -> ModelSegmentAnalysis:
-        result = ModelSegmentAnalysis.model_validate(
-            self._request(
-                frames,
-                build_segment_prompt(sop),
-                max_tokens=self.segment_max_tokens,
-            )
-        )
-        valid_ids = {step.id for step in sop.steps}
-        if result.step_id not in valid_ids:
-            return result.model_copy(
-                update={
-                    "step_id": None,
-                    "status": StepStatus.UNCERTAIN,
-                    "start_sec": None,
-                    "end_sec": None,
+        prompt: str,
+        *,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        content: list[dict[str, Any]] = [{"text": prompt}]
+        for index, frame in enumerate(frames, start=1):
+            evidence_text = self._frame_evidence.get(round(frame.timestamp_sec, 3))
+            content.append(
+                {
+                    "text": (
+                        f"Frame {index}, source timestamp {frame.timestamp_sec:.3f} seconds"
+                        f"{f'; {evidence_text}' if evidence_text else ''}:"
+                    )
                 }
             )
-        if result.start_sec is None or result.end_sec is None:
-            return result.model_copy(
-                update={
-                    "status": StepStatus.UNCERTAIN,
-                    "start_sec": None,
-                    "end_sec": None,
-                    "observation": (
-                        f"{result.observation} The segment did not include a complete "
-                        "evidence timestamp range."
-                    ),
+            content.append(
+                {
+                    "image": {
+                        "format": "jpeg",
+                        "source": {"bytes": frame.jpeg_bytes},
+                    }
                 }
             )
-        window_start = min(frame.timestamp_sec for frame in frames)
-        window_end = max(frame.timestamp_sec for frame in frames)
-        return result.model_copy(
-            update={
-                "start_sec": max(window_start, min(result.start_sec, window_end)),
-                "end_sec": max(window_start, min(result.end_sec, window_end)),
-            }
-        )
+
+        try:
+            response = self.client.converse(
+                modelId=self.model_name,
+                system=[{"text": SYSTEM_PROMPT}],
+                messages=[{"role": "user", "content": content}],
+                inferenceConfig={
+                    "temperature": 0,
+                    "maxTokens": max_tokens,
+                },
+            )
+            response_content = response["output"]["message"]["content"]
+            model_text = "".join(
+                item.get("text", "")
+                for item in response_content
+                if isinstance(item, dict)
+            )
+            if not model_text:
+                raise KeyError("missing model content")
+            return _extract_json(model_text)
+        except ModelServiceError:
+            raise
+        except (BotoCoreError, ClientError, KeyError, TypeError, ValueError) as exc:
+            raise ModelServiceError(
+                "Amazon Bedrock is unavailable or returned an invalid response. "
+                "Verify AWS credentials, region, model access, and quotas, then try again."
+            ) from exc
+
+
+def create_vlm(model_name: str | None = None) -> BaseVLM:
+    provider = os.getenv("MODEL_PROVIDER", "aws_bedrock").strip().lower()
+    if provider == "aws_bedrock":
+        return AWSBedrockVLM(model_name=model_name)
+    if provider == "openai_compatible":
+        return OpenAICompatibleVLM(model_name=model_name)
+    raise ValueError(
+        "MODEL_PROVIDER must be 'aws_bedrock' or 'openai_compatible'"
+    )

@@ -20,19 +20,39 @@ from video_analysis.sop import PROJECT_ROOT, load_sop
 
 ALLOWED_SUFFIXES = {".avi", ".mkv", ".mov", ".mp4", ".webm"}
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "500")) * 1024 * 1024
-MODEL_CATALOG = (
-    ModelOption(
-        id="qwen3-vl:4b-instruct",
-        label="Qwen3-VL 4B",
-        description="Better accuracy · slower",
-    ),
-    ModelOption(
-        id="qwen3-vl:2b-instruct",
-        label="Qwen3-VL 2B",
-        description="Faster · lower accuracy",
-    ),
+MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "aws_bedrock").strip().lower()
+AWS_BEDROCK_MODEL_ID = os.getenv(
+    "AWS_BEDROCK_MODEL_ID",
+    "qwen.qwen3-vl-235b-a22b",
 )
+if MODEL_PROVIDER == "aws_bedrock":
+    MODEL_CATALOG = (
+        ModelOption(
+            id=AWS_BEDROCK_MODEL_ID,
+            label="Qwen3-VL 235B · AWS Bedrock",
+            description="Managed cloud inference · highest accuracy",
+        ),
+    )
+else:
+    MODEL_CATALOG = (
+        ModelOption(
+            id="qwen3-vl:4b-instruct",
+            label="Qwen3-VL 4B",
+            description="Better accuracy · slower",
+        ),
+        ModelOption(
+            id="qwen3-vl:2b-instruct",
+            label="Qwen3-VL 2B",
+            description="Faster · lower accuracy",
+        ),
+    )
 ALLOWED_MODEL_IDS = {model.id for model in MODEL_CATALOG}
+
+
+def configured_model_name() -> str:
+    if MODEL_PROVIDER == "aws_bedrock":
+        return AWS_BEDROCK_MODEL_ID
+    return os.getenv("MODEL_NAME", "qwen3-vl:2b-instruct")
 
 
 class APIError(Exception):
@@ -43,6 +63,8 @@ class APIError(Exception):
 
 
 async def installed_model_ids() -> set[str]:
+    if MODEL_PROVIDER == "aws_bedrock":
+        return ALLOWED_MODEL_IDS
     base_url = os.getenv("MODEL_BASE_URL", "http://127.0.0.1:8001/v1").rstrip("/")
     api_key = os.getenv("MODEL_API_KEY", "")
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -60,7 +82,7 @@ async def installed_model_ids() -> set[str]:
         raise APIError(
             503,
             "model_service_unavailable",
-            "The local model service is unavailable. Start Ollama and try again.",
+            "The configured model service is unavailable. Verify it and try again.",
         ) from exc
 
 
@@ -92,7 +114,7 @@ def health() -> dict[str, str]:
 @app.get("/api/models", response_model=list[ModelOption])
 async def get_models() -> list[ModelOption]:
     installed = await installed_model_ids()
-    default_model = os.getenv("MODEL_NAME", "qwen3-vl:4b-instruct")
+    default_model = configured_model_name()
     return [
         model.model_copy(update={"is_default": model.id == default_model})
         for model in MODEL_CATALOG
@@ -117,7 +139,7 @@ def get_sop(sop_id: str):
 async def create_analysis(
     video: UploadFile = File(...),
     sop_id: str = Form("hk_chp_handrub"),
-    model_name: str = Form(os.getenv("MODEL_NAME", "qwen3-vl:4b-instruct")),
+    model_name: str = Form(configured_model_name()),
 ):
     jobs: JobManager = app.state.jobs
     if await jobs.has_active_job():
@@ -144,7 +166,7 @@ async def create_analysis(
         raise APIError(
             400,
             "model_not_installed",
-            "The selected model is not installed in the local model service.",
+            "The selected model is unavailable in the configured model service.",
         )
 
     temp_path: Path | None = None

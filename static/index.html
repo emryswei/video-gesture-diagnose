@@ -143,13 +143,13 @@
           <div>
             <label for="model-select">AI model</label>
             <select id="model-select" name="model_name" required disabled>
-              <option value="">Loading local models…</option>
+              <option value="">Loading AWS model…</option>
             </select>
           </div>
           <button id="submit-button" class="primary" type="submit" disabled>Analyze video</button>
         </div>
       </form>
-      <p class="notice">Use a clear 15–60 second video. Sampled frames are sent to the configured model service; the full source video is not sent to that service.</p>
+      <p class="notice">Use a clear 15–60 second video. Sampled frames are sent to Amazon Bedrock; the full source video is not uploaded to AWS.</p>
       <div id="progress" class="analysis-progress" role="status" aria-live="polite" hidden>
         <div class="progress-heading">
           <strong id="progress-stage">Preparing analysis…</strong>
@@ -310,8 +310,8 @@
       try {
         const response = await fetch('/api/models');
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.message || 'Could not load local models.');
-        if (!payload.length) throw new Error('No supported Qwen3-VL models are installed.');
+        if (!response.ok) throw new Error(payload.message || 'Could not load the AWS model.');
+        if (!payload.length) throw new Error('No supported AWS vision model is configured.');
         modelSelect.replaceChildren(...payload.map(model => {
           const option = document.createElement('option');
           option.value = model.id;
@@ -325,7 +325,7 @@
       } catch (error) {
         const option = document.createElement('option');
         option.value = '';
-        option.textContent = 'Local model service unavailable';
+        option.textContent = 'AWS model service unavailable';
         modelSelect.replaceChildren(option);
         modelSelect.disabled = true;
         submitButton.disabled = true;
@@ -399,7 +399,7 @@
       progressFill.style.width = `${normalized}%`;
       progressBar.setAttribute('aria-valuenow', String(normalized));
       progressDetail.textContent = isEstimated
-        ? 'Estimated progress based on local model processing time.'
+        ? 'Estimated progress based on AWS model processing time.'
         : normalized === 100
           ? 'The evidence report is ready.'
           : 'Please keep this page open while the analysis runs.';
@@ -413,7 +413,7 @@
       progressStage.textContent = 'Analysis failed';
       progressDetail.textContent = 'The task stopped before completion.';
       progress.hidden = false;
-      errorBox.textContent = `${message} Verify the video and model service, then try again.`;
+      errorBox.textContent = `${message} Verify the video and AWS Bedrock access, then try again.`;
       errorBox.hidden = false;
       displayedProgress = 0;
     }

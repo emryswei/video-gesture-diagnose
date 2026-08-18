@@ -28,7 +28,7 @@ from .video import (
     sample_video,
     visual_change_boundaries,
 )
-from .vlm import OpenAICompatibleVLM
+from .vlm import BaseVLM, create_vlm
 
 
 ProgressCallback = Callable[[int, str, str, bool], None]
@@ -634,10 +634,10 @@ def finalize_result(
 class VideoAnalyzer:
     def __init__(
         self,
-        vlm: OpenAICompatibleVLM | None = None,
+        vlm: BaseVLM | None = None,
         hand_analyzer: MediaPipeHandAnalyzer | None = None,
     ) -> None:
-        self.vlm = vlm or OpenAICompatibleVLM()
+        self.vlm = vlm or create_vlm()
         self.sample_fps = float(os.getenv("VIDEO_SAMPLE_FPS", "2"))
         self.max_frames = int(os.getenv("VIDEO_MAX_FRAMES", "24"))
         self.max_image_edge = int(os.getenv("VIDEO_MAX_IMAGE_EDGE", "336"))
@@ -700,7 +700,7 @@ class VideoAnalyzer:
         )
         vlm = self.vlm
         if model_name and model_name != getattr(vlm, "model_name", None):
-            vlm = OpenAICompatibleVLM(model_name=model_name)
+            vlm = create_vlm(model_name=model_name)
         mediapipe_warning: str | None = None
         hand_evidence_by_timestamp: dict[float, HandFrameEvidence] = {}
         timeline_frames: list[SampledFrame] = []

@@ -15,9 +15,13 @@ A single-user demo that audits a 15–60 second video against the Hong Kong CHP 
 ## Requirements
 
 - Python 3.10+
-- Ollama for the local Windows demo, or another OpenAI-compatible multimodal endpoint
+- An AWS account with Amazon Bedrock access
+- AWS credentials allowed to call `bedrock:InvokeModel`
+- Qwen3-VL 235B available in the selected AWS Region
 
-The FastAPI app does not load model weights or require Torch. Ollama loads the local model.
+The FastAPI app does not load model weights or require Torch. Amazon Bedrock runs
+Qwen3-VL as a managed service. The application sends sampled JPEG frames, not the
+complete source video, to Bedrock.
 
 ## Setup
 
@@ -26,9 +30,10 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-ollama pull qwen3-vl:2b-instruct
 .\scripts\setup_mediapipe.ps1
-.\start_demo.ps1
+Copy-Item .env.example .env
+aws configure
+.\start_aws_demo.ps1
 ```
 
 The setup script downloads Google's Hand Landmarker model to the ignored local
@@ -39,56 +44,60 @@ timeline uses action boundaries instead of the edges of broad VLM windows. If
 the landmarker is unavailable, analysis continues with a warning and VLM-only
 output.
 
-`start_demo.ps1` closes the Ollama tray app and stale model runners, then restarts
-Ollama with the `cpu_avx2` runner. GPU inference is disabled because the Vulkan
-backend caused system-level black screens on the current AMD GPU. The application
-keeps one model and one inference request active at a time.
+`start_aws_demo.ps1` defaults to the Tokyo Region (`ap-northeast-1`), the
+`qwen.qwen3-vl-235b-a22b` Bedrock model, and local port 8500. Override a named AWS
+profile when needed:
 
-After startup, `ollama ps` should show `100% CPU`. Do not launch the Ollama tray
-app during analysis because it can replace the controlled CPU server with its own
-environment settings.
+```powershell
+.\start_aws_demo.ps1 -Profile demo -Region ap-northeast-1
+```
 
-Fast Demo mode reduces repeated image processing with 24 smaller frames and no
-window overlap. CPU inference remains
-slower than GPU inference, but avoids the unstable experimental Vulkan path on the
-installed AMD driver. Repeating an identical analysis within 30 minutes returns the
-cached result without running the model again.
+Open <http://127.0.0.1:8500>.
 
-Open <http://127.0.0.1:8000>.
+The AWS SDK uses the standard credential chain: environment variables, the profile
+selected by `AWS_PROFILE`, shared AWS credential files, or an IAM role. Do not put
+AWS secret keys in `.env` or commit them to Git.
 
-The checked-in `.env.example` targets Ollama at `http://127.0.0.1:11434/v1`.
-The local `.env` uses `qwen3-vl:2b-instruct` by default with 24-frame/336px
-sampling and non-overlapping 2-frame inference windows. MediaPipe and visual
-transition refinement remain enabled for gesture and timestamp accuracy. The 4B
-model remains an optional, slower fallback.
+Fast Demo mode uses 24 resized frames and twelve non-overlapping inference windows.
+Repeating the same video, SOP, and model within 30 minutes returns the in-memory
+cached result without another Bedrock request. MediaPipe and visual transition
+refinement remain local and do not require AWS.
 
 Fast Demo mode disables extra VLM candidate rechecks by default, keeping the first
 analysis to 12 model calls. Set `MODEL_TARGETED_RECHECKS=true` for a slower,
 higher-redundancy pass. MediaPipe evidence collection remains enabled in both modes.
 
-To run the 4B fallback explicitly:
+## Amazon Bedrock inference
 
-```powershell
-ollama pull qwen3-vl:4b-instruct
-.\start_demo.ps1 -Model qwen3-vl:4b-instruct
+The app calls the Amazon Bedrock Runtime `Converse` API through Boto3. Each request
+contains the SOP prompt and up to two timestamped JPEG frames. Configure:
+
+```dotenv
+MODEL_PROVIDER=aws_bedrock
+AWS_REGION=ap-northeast-1
+AWS_BEDROCK_MODEL_ID=qwen.qwen3-vl-235b-a22b
 ```
 
-## Model endpoint contract
+The IAM identity needs at least:
 
-The app calls:
-
-```text
-POST {MODEL_BASE_URL}/chat/completions
+```json
+{
+  "Effect": "Allow",
+  "Action": "bedrock:InvokeModel",
+  "Resource": "*"
+}
 ```
 
-The endpoint must accept OpenAI-style multimodal messages containing base64 JPEG `image_url` items. Sampled frames—not the complete source video—leave the app and are sent to this endpoint.
+To use the original local OpenAI-compatible adapter instead, set
+`MODEL_PROVIDER=openai_compatible` and configure `MODEL_BASE_URL`, `MODEL_API_KEY`,
+and `MODEL_NAME`.
 
 ## API
 
 Create one analysis:
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:8000/api/analyses `
+curl.exe -X POST http://127.0.0.1:8500/api/analyses `
   -F "video=@C:\path\to\handrub.mp4" `
   -F "sop_id=hk_chp_handrub"
 ```
@@ -96,7 +105,7 @@ curl.exe -X POST http://127.0.0.1:8000/api/analyses `
 Poll the returned ID:
 
 ```powershell
-curl.exe http://127.0.0.1:8000/api/analyses/ANALYSIS_ID
+curl.exe http://127.0.0.1:8500/api/analyses/ANALYSIS_ID
 ```
 
 Only one job may be `queued` or `analyzing`. A concurrent create request returns HTTP 409. Completed results and matching cache entries remain in memory for 30 minutes; expired or server-lost IDs return HTTP 410. Cached jobs return `cache_hit: true`.
