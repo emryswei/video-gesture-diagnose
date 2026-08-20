@@ -12,10 +12,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from video_analysis.analyzer import VideoAnalyzer
-from video_analysis.jobs import AnalysisInProgress, JobManager
-from video_analysis.models import AnalysisJob, ErrorResponse, JobCreated, ModelOption
-from video_analysis.sop import PROJECT_ROOT, load_sop
+# Application modules read model settings during import, so load .env first.
+from video_analysis.analyzer import VideoAnalyzer  # noqa: E402
+from video_analysis.jobs import AnalysisInProgress, JobManager  # noqa: E402
+from video_analysis.models import (  # noqa: E402
+    AnalysisJob,
+    ErrorResponse,
+    JobCreated,
+    ModelOption,
+)
+from video_analysis.sop import PROJECT_ROOT, load_sop  # noqa: E402
 
 
 ALLOWED_SUFFIXES = {".avi", ".mkv", ".mov", ".mp4", ".webm"}

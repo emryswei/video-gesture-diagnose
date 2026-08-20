@@ -109,3 +109,9 @@ pytest -q
 ```
 
 Unit tests do not call the external model service.
+
+Run the same lint, syntax, and test checks used by GitHub Actions:
+
+```powershell
+./scripts/check.ps1
+```
